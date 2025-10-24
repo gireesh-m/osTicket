@@ -196,7 +196,9 @@ class SimpleApiController {
             $priorityData = array(
                 'id' => $priority->getId(),
                 'name' => $priority->getDesc(),
-                'priority' => $priority->getPriority()
+                'priority' => $priority->getTag(),
+                'urgency' => $priority->getUrgency(),
+                'color' => $priority->getColor()
             );
         }
         
@@ -251,7 +253,7 @@ class SimpleApiController {
             'topic' => $topicData,
             'assignee' => $assignee,
             'created' => $ticket->getCreateDate(),
-            'updated' => $ticket->getLastUpdate(),
+            'updated' => $ticket->getUpdateDate(),
             'closed' => $isClosed ? $ticket->getCloseDate() : null,
             'user' => array(
                 'id' => $ticket->getUserId(),
