@@ -78,6 +78,7 @@ class SimpleApiController {
             'topicId' => $data['topicId'] ?? null,
             'ip' => $_SERVER['REMOTE_ADDR'],
             'priorityId' => $data['priorityId'] ?? null,
+            'source' => 'API',  // Required for API origin tickets
         );
         
         // Add optional phone if provided
