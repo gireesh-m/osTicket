@@ -36,6 +36,9 @@ require_once INCLUDE_DIR.'class.json.php';
 require_once INCLUDE_DIR.'class.dept.php';
 require_once INCLUDE_DIR.'class.staff.php';
 require_once INCLUDE_DIR.'class.topic.php';
+require_once INCLUDE_DIR.'class.user.php';
+require_once INCLUDE_DIR.'class.organization.php';
+require_once INCLUDE_DIR.'class.faq.php';
 
 header('Content-Type: application/json');
 
@@ -413,6 +416,27 @@ class SimpleApiController {
             $this->error(400, 'Email already exists');
         }
         
+        // Get default department if not provided
+        $dept_id = isset($data['dept_id']) ? $data['dept_id'] : 0;
+        if (!$dept_id) {
+            // Try to get the first available department
+            $depts = Dept::getDepartments();
+            if ($depts) {
+                $dept_ids = array_keys($depts);
+                $dept_id = $dept_ids[0];
+            }
+        }
+        
+        if (!$dept_id) {
+            $this->error(400, 'Department is required. Please create a department first or specify dept_id.');
+        }
+        
+        // Get default role if not provided (1 = All Access, 3 = Limited Access)
+        $role_id = isset($data['role_id']) ? $data['role_id'] : 3; // Default to Limited Access
+        
+        // Debug: log the values being used
+        error_log("Creating staff with dept_id: $dept_id, role_id: $role_id");
+        
         // Create staff
         $staff = Staff::create();
         $errors = array();
@@ -424,8 +448,13 @@ class SimpleApiController {
             'username' => $data['username'],
             'isactive' => isset($data['isactive']) ? $data['isactive'] : 1,
             'isadmin' => isset($data['isadmin']) ? $data['isadmin'] : 0,
-            'dept_id' => isset($data['dept_id']) ? $data['dept_id'] : 0,
+            'dept_id' => $dept_id,
+            'role_id' => $role_id,
+            'assign_use_pri_role' => true,
         );
+        
+        // Debug: log the vars array
+        error_log("Vars array: " . json_encode($vars));
         
         // Add optional fields
         if (isset($data['phone'])) {
@@ -438,6 +467,21 @@ class SimpleApiController {
             $vars['passwd1'] = $data['passwd1'];
             $vars['passwd2'] = $data['passwd2'];
         }
+        
+        // Set default permissions
+        $vars['perms'] = array(
+            User::PERM_CREATE,
+            User::PERM_EDIT,
+            User::PERM_DELETE,
+            User::PERM_MANAGE,
+            User::PERM_DIRECTORY,
+            Organization::PERM_CREATE,
+            Organization::PERM_EDIT,
+            Organization::PERM_DELETE,
+            FAQ::PERM_MANAGE,
+            Dept::PERM_DEPT,
+            Staff::PERM_STAFF,
+        );
         
         if (!$staff->update($vars, $errors)) {
             $this->error(500, 'Failed to create staff: ' . implode(', ', $errors));
