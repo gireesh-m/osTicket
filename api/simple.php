@@ -10,19 +10,21 @@
     Endpoints:
     Tickets:
     - POST /api/simple.php/tickets - Create a new ticket
-    - POST /api/simple.php/tickets/{id}/reply - Reply to a ticket
+    - GET /api/simple.php/tickets - List all tickets
+    - POST /api/simple.php/tickets/{id}/reply - Reply to a ticket (as user)
+    - POST /api/simple.php/tickets/{id}/staff-reply - Reply to a ticket (as staff)
     - GET /api/simple.php/tickets/{id} - Get ticket details
     
     Departments:
     - POST /api/simple.php/departments - Create a new department
     - GET /api/simple.php/departments - List all departments
     - GET /api/simple.php/departments/{id} - Get department details
-    
+
     Staff:
     - POST /api/simple.php/staff - Create a new staff member
     - GET /api/simple.php/staff - List all staff
     - GET /api/simple.php/staff/{id} - Get staff details
-    
+
     Topics:
     - POST /api/simple.php/topics - Create a new help topic
     - GET /api/simple.php/topics - List all topics
@@ -168,6 +170,58 @@ class SimpleApiController {
         ));
     }
     
+    public function replyToTicketAsStaff($ticketId) {
+        // Look up the ticket
+        $ticket = Ticket::lookup($ticketId);
+        
+        if (!$ticket) {
+            $this->error(404, 'Ticket not found');
+        }
+        
+        $data = $this->getRequestBody();
+        
+        if (empty($data['message'])) {
+            $this->error(400, 'Message is required');
+        }
+        
+        if (empty($data['staff_id'])) {
+            $this->error(400, 'Staff ID is required');
+        }
+        
+        // Look up the staff member
+        $staff = Staff::lookup($data['staff_id']);
+        
+        if (!$staff) {
+            $this->error(404, 'Staff member not found');
+        }
+        
+        // Prepare reply data
+        $vars = array(
+            'response' => $data['message'],
+            'poster' => $staff->getName()->getFull(),
+            'staffId' => $staff->getId(),
+        );
+        
+        // Post the reply as staff
+        $msgId = $ticket->postReply($vars, 'API', false);
+        
+        if (!$msgId) {
+            $this->error(500, 'Failed to post staff reply');
+        }
+        
+        $this->success(array(
+            'message_id' => $msgId,
+            'ticket_id' => $ticket->getId(),
+            'ticket_number' => $ticket->getNumber(),
+            'staff' => array(
+                'id' => $staff->getId(),
+                'name' => $staff->getName()->getFull(),
+                'email' => $staff->getEmail()
+            ),
+            'posted' => true
+        ));
+    }
+    
     public function getTicket($ticketId) {
         // Look up the ticket
         $ticket = Ticket::lookup($ticketId);
@@ -290,6 +344,84 @@ class SimpleApiController {
         ));
     }
     
+    public function getTickets() {
+        $sql = 'SELECT ticket_id FROM '.TICKET_TABLE.' ORDER BY created DESC';
+        $result = db_query($sql);
+        
+        $tickets = array();
+        while ($row = db_fetch_row($result)) {
+            $ticket = Ticket::lookup($row[0]);
+            if ($ticket) {
+                // Get status
+                $status = $ticket->getStatus();
+                $statusName = $status ? $status->getName() : 'Open';
+                $isClosed = $ticket->isClosed();
+                
+                // Get priority
+                $priority = $ticket->getPriority();
+                $priorityData = null;
+                if ($priority) {
+                    $priorityData = array(
+                        'id' => $priority->getId(),
+                        'name' => $priority->getDesc()
+                    );
+                }
+                
+                // Get department
+                $dept = $ticket->getDept();
+                $deptData = null;
+                if ($dept) {
+                    $deptData = array(
+                        'id' => $dept->getId(),
+                        'name' => $dept->getName()
+                    );
+                }
+                
+                // Get assigned staff/team
+                $assignee = null;
+                if ($staff = $ticket->getStaff()) {
+                    $assignee = array(
+                        'type' => 'staff',
+                        'id' => $staff->getId(),
+                        'name' => $staff->getName()->getFull()
+                    );
+                } elseif ($team = $ticket->getTeam()) {
+                    $assignee = array(
+                        'type' => 'team',
+                        'id' => $team->getId(),
+                        'name' => $team->getName()
+                    );
+                }
+                
+                $tickets[] = array(
+                    'ticket_id' => $ticket->getId(),
+                    'ticket_number' => $ticket->getNumber(),
+                    'subject' => $ticket->getSubject(),
+                    'status' => array(
+                        'name' => $statusName,
+                        'id' => $status ? $status->getId() : null,
+                        'is_closed' => $isClosed
+                    ),
+                    'priority' => $priorityData,
+                    'department' => $deptData,
+                    'assignee' => $assignee,
+                    'user' => array(
+                        'id' => $ticket->getUserId(),
+                        'name' => $ticket->getName()->getFull(),
+                        'email' => $ticket->getEmail()
+                    ),
+                    'created' => $ticket->getCreateDate(),
+                    'updated' => $ticket->getUpdateDate()
+                );
+            }
+        }
+        
+        $this->success(array(
+            'count' => count($tickets),
+            'tickets' => $tickets
+        ));
+    }
+    
     // ========== DEPARTMENT ENDPOINTS ==========
     
     public function createDepartment() {
@@ -326,11 +458,19 @@ class SimpleApiController {
             $this->error(500, 'Failed to create department: ' . implode(', ', $errors));
         }
         
+        // Reload the department from database to get all populated fields
+        $deptId = $dept->getId();
+        $dept = Dept::lookup($deptId);
+        
+        if (!$dept) {
+            $this->error(500, 'Department created but failed to reload');
+        }
+        
         $this->success(array(
             'id' => $dept->getId(),
             'name' => $dept->getName(),
             'ispublic' => $dept->isPublic(),
-            'created' => $dept->getCreateDate()
+            'created' => $dept->created  // Direct field access instead of getCreateDate()
         ), 201);
     }
     
@@ -382,8 +522,8 @@ class SimpleApiController {
             'status' => $dept->isActive() ? 'active' : 'disabled',
             'manager' => $manager,
             'signature' => $dept->getSignature(),
-            'created' => $dept->getCreateDate(),
-            'updated' => $dept->getUpdateDate()
+            'created' => $dept->created,
+            'updated' => $dept->updated
         ));
     }
     
@@ -492,7 +632,7 @@ class SimpleApiController {
             'username' => $staff->getUsername(),
             'name' => $staff->getName()->getFull(),
             'email' => $staff->getEmail(),
-            'created' => $staff->getCreateDate()
+            'created' => $staff->created  // Direct field access
         ), 201);
     }
     
@@ -564,8 +704,8 @@ class SimpleApiController {
             'department' => $dept,
             'isactive' => $staff->isActive(),
             'isadmin' => $staff->isAdmin(),
-            'created' => $staff->getCreateDate(),
-            'updated' => $staff->getUpdateDate()
+            'created' => $staff->created,
+            'updated' => $staff->updated
         ));
     }
     
@@ -615,7 +755,7 @@ class SimpleApiController {
             'topic' => $topic->getName(),
             'ispublic' => $topic->isPublic(),
             'isactive' => $topic->isActive(),
-            'created' => $topic->getCreateDate()
+            'created' => $topic->created  // Direct field access
         ), 201);
     }
     
@@ -689,8 +829,8 @@ class SimpleApiController {
             'ispublic' => $topic->isPublic(),
             'isactive' => $topic->isActive(),
             'notes' => $topic->getNotes(),
-            'created' => $topic->getCreateDate(),
-            'updated' => $topic->getUpdateDate()
+            'created' => $topic->created,
+            'updated' => $topic->updated
         ));
     }
 }
@@ -706,9 +846,17 @@ $controller = new SimpleApiController();
 if ($method === 'POST' && $path === '/tickets') {
     $controller->createTicket();
 }
-// Route: POST /tickets/{id}/reply - Reply to ticket
+// Route: GET /tickets - List all tickets
+elseif ($method === 'GET' && $path === '/tickets') {
+    $controller->getTickets();
+}
+// Route: POST /tickets/{id}/reply - Reply to ticket (as user)
 elseif ($method === 'POST' && preg_match('#^/tickets/(\d+)/reply$#', $path, $matches)) {
     $controller->replyToTicket($matches[1]);
+}
+// Route: POST /tickets/{id}/staff-reply - Reply to ticket (as staff)
+elseif ($method === 'POST' && preg_match('#^/tickets/(\d+)/staff-reply$#', $path, $matches)) {
+    $controller->replyToTicketAsStaff($matches[1]);
 }
 // Route: GET /tickets/{id} - Get ticket
 elseif ($method === 'GET' && preg_match('#^/tickets/(\d+)$#', $path, $matches)) {
@@ -766,7 +914,9 @@ else {
         'available_endpoints' => array(
             'Tickets' => array(
                 'POST /api/simple.php/tickets' => 'Create a new ticket',
-                'POST /api/simple.php/tickets/{id}/reply' => 'Reply to a ticket',
+                'GET /api/simple.php/tickets' => 'List all tickets',
+                'POST /api/simple.php/tickets/{id}/reply' => 'Reply to a ticket (as user)',
+                'POST /api/simple.php/tickets/{id}/staff-reply' => 'Reply to a ticket (as staff)',
                 'GET /api/simple.php/tickets/{id}' => 'Get ticket details'
             ),
             'Departments' => array(
