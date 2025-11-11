@@ -30,6 +30,11 @@
     - GET /api/simple.php/topics - List all topics
     - GET /api/simple.php/topics/{id} - Get topic details
 
+    Users:
+    - POST /api/simple.php/users - Create a new user
+    - GET /api/simple.php/users - List all users
+    - GET /api/simple.php/users/{id} - Get user details
+
 **********************************************************************/
 
 require 'api.inc.php';
@@ -833,6 +838,167 @@ class SimpleApiController {
             'updated' => $topic->updated
         ));
     }
+    
+    // ========== USER ENDPOINTS ==========
+    
+    public function createUser() {
+        $data = $this->getRequestBody();
+        
+        // Validate required fields
+        if (empty($data['email'])) {
+            $this->error(400, 'Email is required');
+        }
+        if (empty($data['name'])) {
+            $this->error(400, 'Name is required');
+        }
+        
+        // Check if user already exists by email
+        $existingUser = User::lookupByEmail($data['email']);
+        if ($existingUser) {
+            $this->error(400, 'User with this email already exists');
+        }
+        
+        // Create user
+        $errors = array();
+        
+        $vars = array(
+            'email' => $data['email'],
+            'name' => $data['name'],
+        );
+        
+        // Add optional fields
+        if (isset($data['phone'])) {
+            $vars['phone'] = $data['phone'];
+        }
+        if (isset($data['phone_mobile'])) {
+            $vars['phone_mobile'] = $data['phone_mobile'];
+        }
+        if (isset($data['notes'])) {
+            $vars['notes'] = $data['notes'];
+        }
+        if (isset($data['organization_id'])) {
+            $vars['org_id'] = $data['organization_id'];
+        }
+        
+        $user = User::create($vars, $errors);
+        
+        if (!$user) {
+            $this->error(500, 'Failed to create user: ' . implode(', ', $errors));
+        }
+        
+        // Get organization info if set
+        $org = null;
+        if ($user->getOrgId()) {
+            if ($o = Organization::lookup($user->getOrgId())) {
+                $org = array(
+                    'id' => $o->getId(),
+                    'name' => $o->getName()
+                );
+            }
+        }
+        
+        $this->success(array(
+            'id' => $user->getId(),
+            'name' => $user->getName()->getFull(),
+            'email' => $user->getEmail(),
+            'phone' => $user->getPhoneNumber(),
+            'organization' => $org,
+            'created' => $user->created
+        ), 201);
+    }
+    
+    public function getUsers() {
+        $sql = 'SELECT id FROM '.USER_TABLE.' ORDER BY created DESC';
+        $result = db_query($sql);
+        
+        $users = array();
+        while ($row = db_fetch_row($result)) {
+            $user = User::lookup($row[0]);
+            if ($user) {
+                // Get organization info if set
+                $org = null;
+                if ($user->getOrgId()) {
+                    if ($o = Organization::lookup($user->getOrgId())) {
+                        $org = array(
+                            'id' => $o->getId(),
+                            'name' => $o->getName()
+                        );
+                    }
+                }
+                
+                $users[] = array(
+                    'id' => $user->getId(),
+                    'name' => $user->getName()->getFull(),
+                    'email' => $user->getEmail(),
+                    'phone' => $user->getPhoneNumber(),
+                    'organization' => $org,
+                    'created' => $user->getCreateDate(),
+                    'updated' => $user->getUpdateDate()
+                );
+            }
+        }
+        
+        $this->success(array(
+            'count' => count($users),
+            'users' => $users
+        ));
+    }
+    
+    public function getUser($userId) {
+        $user = User::lookup($userId);
+        
+        if (!$user) {
+            $this->error(404, 'User not found');
+        }
+        
+        // Get organization info if set
+        $org = null;
+        if ($user->getOrgId()) {
+            if ($o = Organization::lookup($user->getOrgId())) {
+                $org = array(
+                    'id' => $o->getId(),
+                    'name' => $o->getName()
+                );
+            }
+        }
+        
+        // Get user's tickets
+        $sql = 'SELECT ticket_id FROM '.TICKET_TABLE.' WHERE user_id='.db_input($userId).' ORDER BY created DESC';
+        $result = db_query($sql);
+        
+        $tickets = array();
+        while ($row = db_fetch_row($result)) {
+            $ticket = Ticket::lookup($row[0]);
+            if ($ticket) {
+                $status = $ticket->getStatus();
+                $tickets[] = array(
+                    'ticket_id' => $ticket->getId(),
+                    'ticket_number' => $ticket->getNumber(),
+                    'subject' => $ticket->getSubject(),
+                    'status' => array(
+                        'name' => $status ? $status->getName() : 'Open',
+                        'is_closed' => $ticket->isClosed()
+                    ),
+                    'created' => $ticket->getCreateDate()
+                );
+            }
+        }
+        
+        $this->success(array(
+            'id' => $user->getId(),
+            'name' => $user->getName()->getFull(),
+            'email' => $user->getEmail(),
+            'phone' => $user->getPhoneNumber(),
+            'phone_mobile' => $user->getMobileNumber(),
+            'organization' => $org,
+            'created' => $user->getCreateDate(),
+            'updated' => $user->getUpdateDate(),
+            'tickets' => array(
+                'count' => count($tickets),
+                'tickets' => $tickets
+            )
+        ));
+    }
 }
 
 // Simple routing
@@ -905,6 +1071,20 @@ elseif ($method === 'GET' && preg_match('#^/topics/(\d+)$#', $path, $matches)) {
     $controller->getTopic($matches[1]);
 }
 
+// ========== USER ROUTES ==========
+// Route: POST /users - Create user
+elseif ($method === 'POST' && $path === '/users') {
+    $controller->createUser();
+}
+// Route: GET /users - List all users
+elseif ($method === 'GET' && $path === '/users') {
+    $controller->getUsers();
+}
+// Route: GET /users/{id} - Get user details
+elseif ($method === 'GET' && preg_match('#^/users/(\d+)$#', $path, $matches)) {
+    $controller->getUser($matches[1]);
+}
+
 // ========== 404 NOT FOUND ==========
 else {
     http_response_code(404);
@@ -933,6 +1113,11 @@ else {
                 'POST /api/simple.php/topics' => 'Create a new help topic',
                 'GET /api/simple.php/topics' => 'List all topics',
                 'GET /api/simple.php/topics/{id}' => 'Get topic details'
+            ),
+            'Users' => array(
+                'POST /api/simple.php/users' => 'Create a new user',
+                'GET /api/simple.php/users' => 'List all users',
+                'GET /api/simple.php/users/{id}' => 'Get user details'
             )
         )
     ));
