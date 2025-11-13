@@ -35,6 +35,11 @@
     - GET /api/simple.php/users - List all users
     - GET /api/simple.php/users/{id} - Get user details
 
+    Organizations:
+    - POST /api/simple.php/organizations - Create a new organization
+    - GET /api/simple.php/organizations - List all organizations
+    - GET /api/simple.php/organizations/{id} - Get organization details
+
 **********************************************************************/
 
 require 'api.inc.php';
@@ -46,6 +51,8 @@ require_once INCLUDE_DIR.'class.topic.php';
 require_once INCLUDE_DIR.'class.user.php';
 require_once INCLUDE_DIR.'class.organization.php';
 require_once INCLUDE_DIR.'class.faq.php';
+require_once INCLUDE_DIR.'class.task.php';
+require_once INCLUDE_DIR.'class.canned.php';
 
 header('Content-Type: application/json');
 
@@ -320,6 +327,81 @@ class SimpleApiController {
             );
         }
         
+        // Get collaborators
+        $collaborators = array();
+        foreach ($ticket->getCollaborators() as $collab) {
+            $collaborators[] = array(
+                'id' => $collab->getUserId(),
+                'name' => $collab->getName()->getFull(),
+                'email' => $collab->getEmail()
+            );
+        }
+        
+        // Get attachments
+        $attachments = array();
+        foreach ($thread->getEntries() as $entry) {
+            foreach ($entry->getAttachments() as $att) {
+                $attachments[] = array(
+                    'id' => $att->getId(),
+                    'filename' => $att->getFilename(),
+                    'size' => $att->getSize(),
+                    'type' => $att->getType()
+                );
+            }
+        }
+        
+        // Get linked tickets
+        $linkedTickets = array();
+        $sql = 'SELECT ticket_id FROM '.TICKET_LINK_TABLE.' WHERE linked_id='.db_input($ticketId).' 
+                UNION 
+                SELECT linked_id FROM '.TICKET_LINK_TABLE.' WHERE ticket_id='.db_input($ticketId);
+        $result = db_query($sql);
+        while ($row = db_fetch_row($result)) {
+            if ($linkedTicket = Ticket::lookup($row[0])) {
+                $linkedTickets[] = array(
+                    'ticket_id' => $linkedTicket->getId(),
+                    'ticket_number' => $linkedTicket->getNumber(),
+                    'subject' => $linkedTicket->getSubject()
+                );
+            }
+        }
+        
+        // Check if ticket is merged
+        $mergedInfo = null;
+        if ($ticket->getMergeType()) {
+            $parentId = $ticket->getMergeParentId();
+            if ($parentId && ($parentTicket = Ticket::lookup($parentId))) {
+                $mergedInfo = array(
+                    'is_merged' => true,
+                    'merged_into' => array(
+                        'ticket_id' => $parentTicket->getId(),
+                        'ticket_number' => $parentTicket->getNumber(),
+                        'subject' => $parentTicket->getSubject()
+                    )
+                );
+            }
+        } else {
+            // Check if other tickets are merged into this one
+            $sql = 'SELECT ticket_id FROM '.TICKET_TABLE.' WHERE pid='.db_input($ticketId);
+            $result = db_query($sql);
+            $childTickets = array();
+            while ($row = db_fetch_row($result)) {
+                if ($childTicket = Ticket::lookup($row[0])) {
+                    $childTickets[] = array(
+                        'ticket_id' => $childTicket->getId(),
+                        'ticket_number' => $childTicket->getNumber(),
+                        'subject' => $childTicket->getSubject()
+                    );
+                }
+            }
+            if (count($childTickets) > 0) {
+                $mergedInfo = array(
+                    'is_parent' => true,
+                    'merged_tickets' => $childTickets
+                );
+            }
+        }
+        
         $this->success(array(
             'ticket_id' => $ticket->getId(),
             'ticket_number' => $ticket->getNumber(),
@@ -333,15 +415,34 @@ class SimpleApiController {
             'department' => $deptData,
             'topic' => $topicData,
             'assignee' => $assignee,
+            'source' => $ticket->getSource(),
+            'ip_address' => $ticket->getIP(),
+            'is_overdue' => $ticket->isOverdue(),
+            'is_answered' => $ticket->isAnswered(),
+            'reopen_count' => $ticket->getReopenCount(),
             'created' => $ticket->getCreateDate(),
             'updated' => $ticket->getUpdateDate(),
             'closed' => $isClosed ? $ticket->getCloseDate() : null,
+            'due_date' => $ticket->getDueDate(),
             'user' => array(
                 'id' => $ticket->getUserId(),
                 'name' => $ticket->getName()->getFull(),
                 'email' => $ticket->getEmail(),
                 'phone' => $ticket->getPhoneNumber()
             ),
+            'collaborators' => array(
+                'count' => count($collaborators),
+                'collaborators' => $collaborators
+            ),
+            'attachments' => array(
+                'count' => count($attachments),
+                'attachments' => $attachments
+            ),
+            'linked_tickets' => array(
+                'count' => count($linkedTickets),
+                'tickets' => $linkedTickets
+            ),
+            'merge_info' => $mergedInfo,
             'thread' => array(
                 'total_entries' => count($entries),
                 'entries' => $entries
@@ -350,7 +451,104 @@ class SimpleApiController {
     }
     
     public function getTickets() {
-        $sql = 'SELECT ticket_id FROM '.TICKET_TABLE.' ORDER BY created DESC';
+        // Build WHERE clause based on query parameters
+        $where = array();
+        $params = array();
+        
+        // Filter by status name (e.g., ?status=Open)
+        if (isset($_GET['status']) && $_GET['status']) {
+            $where[] = 'status.name='.db_input($_GET['status']);
+        }
+        
+        // Filter by status state (e.g., ?state=open or ?state=closed)
+        if (isset($_GET['state']) && $_GET['state']) {
+            if (strtolower($_GET['state']) === 'open') {
+                $where[] = 'status.state="open"';
+            } elseif (strtolower($_GET['state']) === 'closed') {
+                $where[] = 'status.state="closed"';
+            }
+        }
+        
+        // Filter by department ID (e.g., ?dept_id=1)
+        if (isset($_GET['dept_id']) && $_GET['dept_id']) {
+            $where[] = 't.dept_id='.db_input($_GET['dept_id']);
+        }
+        
+        // Filter by assigned staff ID (e.g., ?staff_id=2)
+        if (isset($_GET['staff_id']) && $_GET['staff_id']) {
+            $where[] = 't.staff_id='.db_input($_GET['staff_id']);
+        }
+        
+        // Filter by assigned team ID (e.g., ?team_id=3)
+        if (isset($_GET['team_id']) && $_GET['team_id']) {
+            $where[] = 't.team_id='.db_input($_GET['team_id']);
+        }
+        
+        // Filter by topic ID (e.g., ?topic_id=4)
+        if (isset($_GET['topic_id']) && $_GET['topic_id']) {
+            $where[] = 't.topic_id='.db_input($_GET['topic_id']);
+        }
+        
+        // Filter by user ID (e.g., ?user_id=5)
+        if (isset($_GET['user_id']) && $_GET['user_id']) {
+            $where[] = 't.user_id='.db_input($_GET['user_id']);
+        }
+        
+        // Filter by answered status (e.g., ?answered=1 or ?answered=0)
+        if (isset($_GET['answered'])) {
+            if ($_GET['answered'] == '1') {
+                $where[] = 't.isanswered=1';
+            } elseif ($_GET['answered'] == '0') {
+                $where[] = 't.isanswered=0';
+            }
+        }
+        
+        // Filter by overdue status (e.g., ?overdue=1)
+        if (isset($_GET['overdue']) && $_GET['overdue'] == '1') {
+            $where[] = 't.isoverdue=1';
+        }
+        
+        // Filter by created date range (e.g., ?created_after=2025-11-01)
+        if (isset($_GET['created_after']) && $_GET['created_after']) {
+            $where[] = 't.created>='.db_input($_GET['created_after']);
+        }
+        if (isset($_GET['created_before']) && $_GET['created_before']) {
+            $where[] = 't.created<='.db_input($_GET['created_before']);
+        }
+        
+        // Filter by updated date range
+        if (isset($_GET['updated_after']) && $_GET['updated_after']) {
+            $where[] = 't.updated>='.db_input($_GET['updated_after']);
+        }
+        if (isset($_GET['updated_before']) && $_GET['updated_before']) {
+            $where[] = 't.updated<='.db_input($_GET['updated_before']);
+        }
+        
+        // Filter by due date range
+        if (isset($_GET['due_after']) && $_GET['due_after']) {
+            $where[] = 't.duedate>='.db_input($_GET['due_after']);
+        }
+        if (isset($_GET['due_before']) && $_GET['due_before']) {
+            $where[] = 't.duedate<='.db_input($_GET['due_before']);
+        }
+        
+        // Filter by keyword in subject (e.g., ?subject=login)
+        if (isset($_GET['subject']) && $_GET['subject']) {
+            $where[] = 't.subject LIKE "%'.db_input($_GET['subject'], false).'%"';
+        }
+        
+        // Build SQL query
+        $sql = 'SELECT t.ticket_id FROM '.TICKET_TABLE.' t 
+                LEFT JOIN '.TICKET_STATUS_TABLE.' status ON t.status_id=status.id';
+        
+        if (count($where) > 0) {
+            $sql .= ' WHERE ' . implode(' AND ', $where);
+        }
+        
+        // Limit results (e.g., ?limit=10)
+        $limit = isset($_GET['limit']) && is_numeric($_GET['limit']) ? intval($_GET['limit']) : 100;
+        $sql .= ' ORDER BY t.created DESC LIMIT ' . $limit;
+        
         $result = db_query($sql);
         
         $tickets = array();
@@ -410,6 +608,8 @@ class SimpleApiController {
                     'priority' => $priorityData,
                     'department' => $deptData,
                     'assignee' => $assignee,
+                    'is_overdue' => $ticket->isOverdue(),
+                    'is_answered' => $ticket->isAnswered(),
                     'user' => array(
                         'id' => $ticket->getUserId(),
                         'name' => $ticket->getName()->getFull(),
@@ -423,6 +623,7 @@ class SimpleApiController {
         
         $this->success(array(
             'count' => count($tickets),
+            'filters_applied' => $_GET,
             'tickets' => $tickets
         ));
     }
@@ -839,6 +1040,121 @@ class SimpleApiController {
         ));
     }
     
+    // ========== ORGANIZATION ENDPOINTS ==========
+    
+    public function createOrganization() {
+        $data = $this->getRequestBody();
+        
+        // Validate required fields
+        if (empty($data['name'])) {
+            $this->error(400, 'Organization name is required');
+        }
+        
+        // Create organization
+        $errors = array();
+        
+        $vars = array(
+            'name' => $data['name'],
+        );
+        
+        // Add optional fields
+        if (isset($data['website'])) {
+            $vars['website'] = $data['website'];
+        }
+        if (isset($data['phone'])) {
+            $vars['phone'] = $data['phone'];
+        }
+        if (isset($data['address'])) {
+            $vars['address'] = $data['address'];
+        }
+        if (isset($data['notes'])) {
+            $vars['notes'] = $data['notes'];
+        }
+        
+        $org = Organization::create($vars, $errors);
+        
+        if (!$org) {
+            $this->error(500, 'Failed to create organization: ' . implode(', ', $errors));
+        }
+        
+        $this->success(array(
+            'id' => $org->getId(),
+            'name' => $org->getName(),
+            'website' => $org->getWebsite(),
+            'phone' => $org->getPhoneNumber(),
+            'created' => $org->created
+        ), 201);
+    }
+    
+    public function getOrganizations() {
+        $sql = 'SELECT id FROM '.ORGANIZATION_TABLE.' ORDER BY name';
+        $result = db_query($sql);
+        
+        $organizations = array();
+        while ($row = db_fetch_row($result)) {
+            $org = Organization::lookup($row[0]);
+            if ($org) {
+                // Get user count for the organization
+                $userCount = $org->getUserCount();
+                
+                $organizations[] = array(
+                    'id' => $org->getId(),
+                    'name' => $org->getName(),
+                    'website' => $org->getWebsite(),
+                    'phone' => $org->getPhoneNumber(),
+                    'user_count' => $userCount,
+                    'created' => $org->getCreateDate(),
+                    'updated' => $org->getUpdateDate()
+                );
+            }
+        }
+        
+        $this->success(array(
+            'count' => count($organizations),
+            'organizations' => $organizations
+        ));
+    }
+    
+    public function getOrganization($orgId) {
+        $org = Organization::lookup($orgId);
+        
+        if (!$org) {
+            $this->error(404, 'Organization not found');
+        }
+        
+        // Get organization's users
+        $sql = 'SELECT id FROM '.USER_TABLE.' WHERE org_id='.db_input($orgId).' ORDER BY created DESC';
+        $result = db_query($sql);
+        
+        $users = array();
+        while ($row = db_fetch_row($result)) {
+            $user = User::lookup($row[0]);
+            if ($user) {
+                $users[] = array(
+                    'id' => $user->getId(),
+                    'name' => $user->getName()->getFull(),
+                    'email' => $user->getEmail(),
+                    'phone' => $user->getPhoneNumber()
+                );
+            }
+        }
+        
+        $this->success(array(
+            'id' => $org->getId(),
+            'name' => $org->getName(),
+            'website' => $org->getWebsite(),
+            'phone' => $org->getPhoneNumber(),
+            'address' => $org->getAddress(),
+            'notes' => $org->getNotes(),
+            'created' => $org->getCreateDate(),
+            'updated' => $org->getUpdateDate(),
+            'users' => array(
+                'count' => count($users),
+                'users' => $users
+            )
+        ));
+    }
+    
     // ========== USER ENDPOINTS ==========
     
     public function createUser() {
@@ -850,6 +1166,9 @@ class SimpleApiController {
         }
         if (empty($data['name'])) {
             $this->error(400, 'Name is required');
+        }
+        if (empty($data['phone'])) {
+            $this->error(400, 'Phone number is required');
         }
         
         // Check if user already exists by email
@@ -864,12 +1183,10 @@ class SimpleApiController {
         $vars = array(
             'email' => $data['email'],
             'name' => $data['name'],
+            'phone' => $data['phone'],
         );
         
         // Add optional fields
-        if (isset($data['phone'])) {
-            $vars['phone'] = $data['phone'];
-        }
         if (isset($data['phone_mobile'])) {
             $vars['phone_mobile'] = $data['phone_mobile'];
         }
@@ -999,6 +1316,520 @@ class SimpleApiController {
             )
         ));
     }
+    
+    // ========== TASK ENDPOINTS ==========
+    
+    public function createTask() {
+        $data = $this->getRequestBody();
+        
+        // Validate required fields
+        if (empty($data['title'])) {
+            $this->error(400, 'Task title is required');
+        }
+        
+        // Create task
+        $errors = array();
+        
+        $vars = array(
+            'number' => '', // Will be auto-generated
+            'title' => $data['title'],
+            'description' => isset($data['description']) ? $data['description'] : '',
+            'dept_id' => isset($data['dept_id']) ? $data['dept_id'] : 0,
+        );
+        
+        // Add optional fields
+        if (isset($data['staff_id'])) {
+            $vars['staff_id'] = $data['staff_id'];
+        }
+        if (isset($data['team_id'])) {
+            $vars['team_id'] = $data['team_id'];
+        }
+        if (isset($data['duedate'])) {
+            $vars['duedate'] = $data['duedate'];
+        }
+        
+        $task = Task::create($vars, $errors);
+        
+        if (!$task) {
+            $this->error(500, 'Failed to create task: ' . implode(', ', $errors));
+        }
+        
+        $this->success(array(
+            'id' => $task->getId(),
+            'number' => $task->getNumber(),
+            'title' => $task->getTitle(),
+            'created' => $task->getCreateDate()
+        ), 201);
+    }
+    
+    public function getTasks() {
+        $sql = 'SELECT id FROM '.TASK_TABLE.' ORDER BY created DESC';
+        $result = db_query($sql);
+        
+        $tasks = array();
+        while ($row = db_fetch_row($result)) {
+            $task = Task::lookup($row[0]);
+            if ($task) {
+                // Get department
+                $dept = null;
+                if ($task->getDeptId()) {
+                    if ($d = Dept::lookup($task->getDeptId())) {
+                        $dept = array(
+                            'id' => $d->getId(),
+                            'name' => $d->getName()
+                        );
+                    }
+                }
+                
+                // Get assignee (staff or team)
+                $assignee = null;
+                if ($task->getStaffId()) {
+                    if ($staff = Staff::lookup($task->getStaffId())) {
+                        $assignee = array(
+                            'type' => 'staff',
+                            'id' => $staff->getId(),
+                            'name' => $staff->getName()->getFull()
+                        );
+                    }
+                } elseif ($task->getTeamId()) {
+                    if ($team = Team::lookup($task->getTeamId())) {
+                        $assignee = array(
+                            'type' => 'team',
+                            'id' => $team->getId(),
+                            'name' => $team->getName()
+                        );
+                    }
+                }
+                
+                $tasks[] = array(
+                    'id' => $task->getId(),
+                    'number' => $task->getNumber(),
+                    'title' => $task->getTitle(),
+                    'status' => $task->isClosed() ? 'closed' : 'open',
+                    'department' => $dept,
+                    'assignee' => $assignee,
+                    'due_date' => $task->getDueDate(),
+                    'created' => $task->getCreateDate(),
+                    'updated' => $task->getUpdateDate()
+                );
+            }
+        }
+        
+        $this->success(array(
+            'count' => count($tasks),
+            'tasks' => $tasks
+        ));
+    }
+    
+    public function getTask($taskId) {
+        $task = Task::lookup($taskId);
+        
+        if (!$task) {
+            $this->error(404, 'Task not found');
+        }
+        
+        // Get department
+        $dept = null;
+        if ($task->getDeptId()) {
+            if ($d = Dept::lookup($task->getDeptId())) {
+                $dept = array(
+                    'id' => $d->getId(),
+                    'name' => $d->getName()
+                );
+            }
+        }
+        
+        // Get assignee (staff or team)
+        $assignee = null;
+        if ($task->getStaffId()) {
+            if ($staff = Staff::lookup($task->getStaffId())) {
+                $assignee = array(
+                    'type' => 'staff',
+                    'id' => $staff->getId(),
+                    'name' => $staff->getName()->getFull(),
+                    'email' => $staff->getEmail()
+                );
+            }
+        } elseif ($task->getTeamId()) {
+            if ($team = Team::lookup($task->getTeamId())) {
+                $assignee = array(
+                    'type' => 'team',
+                    'id' => $team->getId(),
+                    'name' => $team->getName()
+                );
+            }
+        }
+        
+        // Get thread entries (updates and notes)
+        $entries = array();
+        $thread = $task->getThread();
+        
+        if ($thread) {
+            foreach ($thread->getEntries() as $entry) {
+                $type = $entry->getType();
+                
+                // M = Message, N = Internal note, R = Response
+                $entryData = array(
+                    'id' => $entry->getId(),
+                    'type' => $type == 'N' ? 'internal_note' : 'update',
+                    'poster' => $entry->getName()->getFull(),
+                    'message' => $entry->getBody()->getClean(),
+                    'created' => $entry->getCreateDate(),
+                );
+                
+                // Add staff info if available
+                if ($staff = $entry->getStaff()) {
+                    $entryData['staff'] = array(
+                        'id' => $staff->getId(),
+                        'name' => $staff->getName()->getFull(),
+                        'email' => $staff->getEmail()
+                    );
+                }
+                
+                $entries[] = $entryData;
+            }
+        }
+        
+        $this->success(array(
+            'id' => $task->getId(),
+            'number' => $task->getNumber(),
+            'title' => $task->getTitle(),
+            'description' => $task->getDescription(),
+            'status' => $task->isClosed() ? 'closed' : 'open',
+            'department' => $dept,
+            'assignee' => $assignee,
+            'due_date' => $task->getDueDate(),
+            'created' => $task->getCreateDate(),
+            'updated' => $task->getUpdateDate(),
+            'closed' => $task->isClosed() ? $task->getCloseDate() : null,
+            'thread' => array(
+                'total_entries' => count($entries),
+                'entries' => $entries
+            )
+        ));
+    }
+    
+    // ========== FAQ ENDPOINTS ==========
+    
+    public function createFAQ() {
+        $data = $this->getRequestBody();
+        
+        // Validate required fields
+        if (empty($data['question'])) {
+            $this->error(400, 'Question is required');
+        }
+        if (empty($data['answer'])) {
+            $this->error(400, 'Answer is required');
+        }
+        
+        // Create FAQ
+        $errors = array();
+        
+        $vars = array(
+            'question' => $data['question'],
+            'answer' => $data['answer'],
+            'category_id' => isset($data['category_id']) ? $data['category_id'] : 0,
+            'ispublished' => isset($data['ispublished']) ? $data['ispublished'] : 0,
+            'notes' => isset($data['notes']) ? $data['notes'] : '',
+        );
+        
+        // Add optional keywords
+        if (isset($data['keywords'])) {
+            $vars['keywords'] = $data['keywords'];
+        }
+        
+        $faq = FAQ::create($vars, $errors);
+        
+        if (!$faq) {
+            $this->error(500, 'Failed to create FAQ: ' . implode(', ', $errors));
+        }
+        
+        $this->success(array(
+            'id' => $faq->getId(),
+            'question' => $faq->getQuestion(),
+            'category_id' => $faq->getCategoryId(),
+            'ispublished' => $faq->isPublished(),
+            'created' => $faq->getCreateDate()
+        ), 201);
+    }
+    
+    public function getFAQs() {
+        $sql = 'SELECT faq_id FROM '.FAQ_TABLE.' ORDER BY created DESC';
+        $result = db_query($sql);
+        
+        $faqs = array();
+        while ($row = db_fetch_row($result)) {
+            $faq = FAQ::lookup($row[0]);
+            if ($faq) {
+                // Get category info
+                $category = null;
+                if ($faq->getCategoryId()) {
+                    if ($cat = Category::lookup($faq->getCategoryId())) {
+                        $category = array(
+                            'id' => $cat->getId(),
+                            'name' => $cat->getName()
+                        );
+                    }
+                }
+                
+                $faqs[] = array(
+                    'id' => $faq->getId(),
+                    'question' => $faq->getQuestion(),
+                    'answer' => $faq->getAnswerWithImages(),
+                    'category' => $category,
+                    'ispublished' => $faq->isPublished(),
+                    'created' => $faq->getCreateDate(),
+                    'updated' => $faq->getUpdateDate()
+                );
+            }
+        }
+        
+        $this->success(array(
+            'count' => count($faqs),
+            'faqs' => $faqs
+        ));
+    }
+    
+    public function getFAQ($faqId) {
+        $faq = FAQ::lookup($faqId);
+        
+        if (!$faq) {
+            $this->error(404, 'FAQ not found');
+        }
+        
+        // Get category info
+        $category = null;
+        if ($faq->getCategoryId()) {
+            if ($cat = Category::lookup($faq->getCategoryId())) {
+                $category = array(
+                    'id' => $cat->getId(),
+                    'name' => $cat->getName(),
+                    'description' => $cat->getDescription()
+                );
+            }
+        }
+        
+        $this->success(array(
+            'id' => $faq->getId(),
+            'question' => $faq->getQuestion(),
+            'answer' => $faq->getAnswerWithImages(),
+            'category' => $category,
+            'keywords' => $faq->getKeywords(),
+            'ispublished' => $faq->isPublished(),
+            'notes' => $faq->getNotes(),
+            'created' => $faq->getCreateDate(),
+            'updated' => $faq->getUpdateDate()
+        ));
+    }
+    
+    // ========== FAQ CATEGORY ENDPOINTS ==========
+    
+    public function createFAQCategory() {
+        $data = $this->getRequestBody();
+        
+        // Validate required fields
+        if (empty($data['name'])) {
+            $this->error(400, 'Category name is required');
+        }
+        
+        // Create category
+        $errors = array();
+        
+        $vars = array(
+            'name' => $data['name'],
+            'description' => isset($data['description']) ? $data['description'] : '',
+            'ispublic' => isset($data['ispublic']) ? $data['ispublic'] : 1,
+            'notes' => isset($data['notes']) ? $data['notes'] : '',
+        );
+        
+        $category = Category::create($vars, $errors);
+        
+        if (!$category) {
+            $this->error(500, 'Failed to create category: ' . implode(', ', $errors));
+        }
+        
+        $this->success(array(
+            'id' => $category->getId(),
+            'name' => $category->getName(),
+            'ispublic' => $category->isPublic(),
+            'created' => $category->getCreateDate()
+        ), 201);
+    }
+    
+    public function getFAQCategories() {
+        $categories = Category::getPublicCategories();
+        $result = array();
+        
+        // Get all categories (public and private)
+        $sql = 'SELECT category_id FROM '.FAQ_CATEGORY_TABLE.' ORDER BY name';
+        $res = db_query($sql);
+        
+        while ($row = db_fetch_row($res)) {
+            $category = Category::lookup($row[0]);
+            if ($category) {
+                // Count FAQs in this category
+                $faqCount = $category->getFAQCount();
+                
+                $result[] = array(
+                    'id' => $category->getId(),
+                    'name' => $category->getName(),
+                    'description' => $category->getDescription(),
+                    'ispublic' => $category->isPublic(),
+                    'faq_count' => $faqCount,
+                    'created' => $category->getCreateDate(),
+                    'updated' => $category->getUpdateDate()
+                );
+            }
+        }
+        
+        $this->success(array(
+            'count' => count($result),
+            'categories' => $result
+        ));
+    }
+    
+    public function getFAQCategory($categoryId) {
+        $category = Category::lookup($categoryId);
+        
+        if (!$category) {
+            $this->error(404, 'Category not found');
+        }
+        
+        // Get FAQs in this category
+        $faqs = array();
+        $sql = 'SELECT faq_id FROM '.FAQ_TABLE.' WHERE category_id='.db_input($categoryId).' ORDER BY question';
+        $result = db_query($sql);
+        
+        while ($row = db_fetch_row($result)) {
+            $faq = FAQ::lookup($row[0]);
+            if ($faq) {
+                $faqs[] = array(
+                    'id' => $faq->getId(),
+                    'question' => $faq->getQuestion(),
+                    'ispublished' => $faq->isPublished()
+                );
+            }
+        }
+        
+        $this->success(array(
+            'id' => $category->getId(),
+            'name' => $category->getName(),
+            'description' => $category->getDescription(),
+            'ispublic' => $category->isPublic(),
+            'notes' => $category->getNotes(),
+            'created' => $category->getCreateDate(),
+            'updated' => $category->getUpdateDate(),
+            'faqs' => array(
+                'count' => count($faqs),
+                'faqs' => $faqs
+            )
+        ));
+    }
+    
+    // ========== CANNED RESPONSE ENDPOINTS ==========
+    
+    public function createCannedResponse() {
+        $data = $this->getRequestBody();
+        
+        // Validate required fields
+        if (empty($data['title'])) {
+            $this->error(400, 'Title is required');
+        }
+        if (empty($data['response'])) {
+            $this->error(400, 'Response text is required');
+        }
+        
+        // Create canned response
+        $errors = array();
+        
+        $vars = array(
+            'title' => $data['title'],
+            'response' => $data['response'],
+            'isenabled' => isset($data['isenabled']) ? $data['isenabled'] : 1,
+            'dept_id' => isset($data['dept_id']) ? $data['dept_id'] : 0,
+            'notes' => isset($data['notes']) ? $data['notes'] : '',
+        );
+        
+        $canned = Canned::create($vars, $errors);
+        
+        if (!$canned) {
+            $this->error(500, 'Failed to create canned response: ' . implode(', ', $errors));
+        }
+        
+        $this->success(array(
+            'id' => $canned->getId(),
+            'title' => $canned->getTitle(),
+            'isenabled' => $canned->isEnabled(),
+            'created' => $canned->created
+        ), 201);
+    }
+    
+    public function getCannedResponses() {
+        $sql = 'SELECT canned_response_id FROM '.CANNED_TABLE.' ORDER BY title';
+        $result = db_query($sql);
+        
+        $responses = array();
+        while ($row = db_fetch_row($result)) {
+            $canned = Canned::lookup($row[0]);
+            if ($canned) {
+                // Get department info
+                $dept = null;
+                if ($canned->getDeptId()) {
+                    if ($d = Dept::lookup($canned->getDeptId())) {
+                        $dept = array(
+                            'id' => $d->getId(),
+                            'name' => $d->getName()
+                        );
+                    }
+                }
+                
+                $responses[] = array(
+                    'id' => $canned->getId(),
+                    'title' => $canned->getTitle(),
+                    'response' => $canned->getResponse(),
+                    'department' => $dept,
+                    'isenabled' => $canned->isEnabled(),
+                    'created' => $canned->created,
+                    'updated' => $canned->updated
+                );
+            }
+        }
+        
+        $this->success(array(
+            'count' => count($responses),
+            'canned_responses' => $responses
+        ));
+    }
+    
+    public function getCannedResponse($cannedId) {
+        $canned = Canned::lookup($cannedId);
+        
+        if (!$canned) {
+            $this->error(404, 'Canned response not found');
+        }
+        
+        // Get department info
+        $dept = null;
+        if ($canned->getDeptId()) {
+            if ($d = Dept::lookup($canned->getDeptId())) {
+                $dept = array(
+                    'id' => $d->getId(),
+                    'name' => $d->getName()
+                );
+            }
+        }
+        
+        $this->success(array(
+            'id' => $canned->getId(),
+            'title' => $canned->getTitle(),
+            'response' => $canned->getResponse(),
+            'department' => $dept,
+            'isenabled' => $canned->isEnabled(),
+            'notes' => $canned->getNotes(),
+            'created' => $canned->created,
+            'updated' => $canned->updated
+        ));
+    }
 }
 
 // Simple routing
@@ -1085,6 +1916,76 @@ elseif ($method === 'GET' && preg_match('#^/users/(\d+)$#', $path, $matches)) {
     $controller->getUser($matches[1]);
 }
 
+// ========== ORGANIZATION ROUTES ==========
+// Route: POST /organizations - Create organization
+elseif ($method === 'POST' && $path === '/organizations') {
+    $controller->createOrganization();
+}
+// Route: GET /organizations - List all organizations
+elseif ($method === 'GET' && $path === '/organizations') {
+    $controller->getOrganizations();
+}
+// Route: GET /organizations/{id} - Get organization details
+elseif ($method === 'GET' && preg_match('#^/organizations/(\d+)$#', $path, $matches)) {
+    $controller->getOrganization($matches[1]);
+}
+
+// ========== TASK ROUTES ==========
+// Route: POST /tasks - Create task
+elseif ($method === 'POST' && $path === '/tasks') {
+    $controller->createTask();
+}
+// Route: GET /tasks - List all tasks
+elseif ($method === 'GET' && $path === '/tasks') {
+    $controller->getTasks();
+}
+// Route: GET /tasks/{id} - Get task details
+elseif ($method === 'GET' && preg_match('#^/tasks/(\d+)$#', $path, $matches)) {
+    $controller->getTask($matches[1]);
+}
+
+// ========== FAQ ROUTES ==========
+// Route: POST /faqs - Create FAQ
+elseif ($method === 'POST' && $path === '/faqs') {
+    $controller->createFAQ();
+}
+// Route: GET /faqs - List all FAQs
+elseif ($method === 'GET' && $path === '/faqs') {
+    $controller->getFAQs();
+}
+// Route: GET /faqs/{id} - Get FAQ details
+elseif ($method === 'GET' && preg_match('#^/faqs/(\d+)$#', $path, $matches)) {
+    $controller->getFAQ($matches[1]);
+}
+
+// ========== FAQ CATEGORY ROUTES ==========
+// Route: POST /faq-categories - Create FAQ category
+elseif ($method === 'POST' && $path === '/faq-categories') {
+    $controller->createFAQCategory();
+}
+// Route: GET /faq-categories - List all categories
+elseif ($method === 'GET' && $path === '/faq-categories') {
+    $controller->getFAQCategories();
+}
+// Route: GET /faq-categories/{id} - Get category details
+elseif ($method === 'GET' && preg_match('#^/faq-categories/(\d+)$#', $path, $matches)) {
+    $controller->getFAQCategory($matches[1]);
+}
+
+// ========== CANNED RESPONSE ROUTES ==========
+// Route: POST /canned-responses - Create canned response
+elseif ($method === 'POST' && $path === '/canned-responses') {
+    $controller->createCannedResponse();
+}
+// Route: GET /canned-responses - List all canned responses
+elseif ($method === 'GET' && $path === '/canned-responses') {
+    $controller->getCannedResponses();
+}
+// Route: GET /canned-responses/{id} - Get canned response details
+elseif ($method === 'GET' && preg_match('#^/canned-responses/(\d+)$#', $path, $matches)) {
+    $controller->getCannedResponse($matches[1]);
+}
+
 // ========== 404 NOT FOUND ==========
 else {
     http_response_code(404);
@@ -1118,6 +2019,31 @@ else {
                 'POST /api/simple.php/users' => 'Create a new user',
                 'GET /api/simple.php/users' => 'List all users',
                 'GET /api/simple.php/users/{id}' => 'Get user details'
+            ),
+            'Organizations' => array(
+                'POST /api/simple.php/organizations' => 'Create a new organization',
+                'GET /api/simple.php/organizations' => 'List all organizations',
+                'GET /api/simple.php/organizations/{id}' => 'Get organization details'
+            ),
+            'Tasks' => array(
+                'POST /api/simple.php/tasks' => 'Create a new task',
+                'GET /api/simple.php/tasks' => 'List all tasks',
+                'GET /api/simple.php/tasks/{id}' => 'Get task details'
+            ),
+            'FAQs' => array(
+                'POST /api/simple.php/faqs' => 'Create a new FAQ',
+                'GET /api/simple.php/faqs' => 'List all FAQs',
+                'GET /api/simple.php/faqs/{id}' => 'Get FAQ details'
+            ),
+            'FAQ Categories' => array(
+                'POST /api/simple.php/faq-categories' => 'Create a new FAQ category',
+                'GET /api/simple.php/faq-categories' => 'List all FAQ categories',
+                'GET /api/simple.php/faq-categories/{id}' => 'Get FAQ category details'
+            ),
+            'Canned Responses' => array(
+                'POST /api/simple.php/canned-responses' => 'Create a new canned response',
+                'GET /api/simple.php/canned-responses' => 'List all canned responses',
+                'GET /api/simple.php/canned-responses/{id}' => 'Get canned response details'
             )
         )
     ));
