@@ -1306,7 +1306,7 @@ class SimpleApiController {
             'name' => $user->getName()->getFull(),
             'email' => $user->getEmail(),
             'phone' => $user->getPhoneNumber(),
-            'phone_mobile' => $user->getMobileNumber(),
+            'phone_mobile' => $user->getVar('phone_mobile'),  // Use getVar for custom/dynamic fields
             'organization' => $org,
             'created' => $user->getCreateDate(),
             'updated' => $user->getUpdateDate(),
