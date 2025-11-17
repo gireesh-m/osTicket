@@ -351,20 +351,8 @@ class SimpleApiController {
         }
         
         // Get linked tickets
+        // Note: Linked tickets feature not available in standard osTicket
         $linkedTickets = array();
-        $sql = 'SELECT ticket_id FROM '.TICKET_LINK_TABLE.' WHERE linked_id='.db_input($ticketId).' 
-                UNION 
-                SELECT linked_id FROM '.TICKET_LINK_TABLE.' WHERE ticket_id='.db_input($ticketId);
-        $result = db_query($sql);
-        while ($row = db_fetch_row($result)) {
-            if ($linkedTicket = Ticket::lookup($row[0])) {
-                $linkedTickets[] = array(
-                    'ticket_id' => $linkedTicket->getId(),
-                    'ticket_number' => $linkedTicket->getNumber(),
-                    'subject' => $linkedTicket->getSubject()
-                );
-            }
-        }
         
         // Check if ticket is merged
         $mergedInfo = null;
