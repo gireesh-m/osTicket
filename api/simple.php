@@ -1225,40 +1225,59 @@ class SimpleApiController {
     }
     
     public function getUsers() {
-        $sql = 'SELECT id FROM '.USER_TABLE.' ORDER BY created DESC';
-        $result = db_query($sql);
-        
-        $users = array();
-        while ($row = db_fetch_row($result)) {
-            $user = User::lookup($row[0]);
-            if ($user) {
-                // Get organization info if set
-                $org = null;
-                if ($user->getOrgId()) {
-                    if ($o = Organization::lookup($user->getOrgId())) {
-                        $org = array(
-                            'id' => $o->getId(),
-                            'name' => $o->getName()
+        try {
+            $sql = 'SELECT id FROM '.USER_TABLE.' ORDER BY created DESC';
+            $result = db_query($sql);
+            
+            if (!$result) {
+                $this->error(500, 'Database query failed');
+            }
+            
+            $users = array();
+            while ($row = db_fetch_row($result)) {
+                try {
+                    $user = User::lookup($row[0]);
+                    if ($user) {
+                        // Get organization info if set
+                        $org = null;
+                        if ($user->getOrgId()) {
+                            try {
+                                if ($o = Organization::lookup($user->getOrgId())) {
+                                    $org = array(
+                                        'id' => $o->getId(),
+                                        'name' => $o->getName()
+                                    );
+                                }
+                            } catch (Exception $e) {
+                                // Skip organization lookup error, continue with null
+                                error_log('Error looking up organization: ' . $e->getMessage());
+                            }
+                        }
+                        
+                        $users[] = array(
+                            'id' => $user->getId(),
+                            'name' => $user->getName()->getFull(),
+                            'email' => $user->getEmail(),
+                            'phone' => $user->getPhoneNumber(),
+                            'organization' => $org,
+                            'created' => $user->getCreateDate(),
+                            'updated' => $user->getUpdateDate()
                         );
                     }
+                } catch (Exception $e) {
+                    // Log error but continue with other users
+                    error_log('Error processing user ID ' . $row[0] . ': ' . $e->getMessage());
+                    continue;
                 }
-                
-                $users[] = array(
-                    'id' => $user->getId(),
-                    'name' => $user->getName()->getFull(),
-                    'email' => $user->getEmail(),
-                    'phone' => $user->getPhoneNumber(),
-                    'organization' => $org,
-                    'created' => $user->getCreateDate(),
-                    'updated' => $user->getUpdateDate()
-                );
             }
+            
+            $this->success(array(
+                'count' => count($users),
+                'users' => $users
+            ));
+        } catch (Exception $e) {
+            $this->error(500, 'Error fetching users: ' . $e->getMessage());
         }
-        
-        $this->success(array(
-            'count' => count($users),
-            'users' => $users
-        ));
     }
     
     public function getUser($userId) {
