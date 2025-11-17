@@ -681,25 +681,34 @@ class SimpleApiController {
     }
     
     public function getDepartments() {
-        $depts = Dept::getDepartments();
-        $result = array();
-        
-        foreach ($depts as $id => $name) {
-            $dept = Dept::lookup($id);
-            if ($dept) {
-                $result[] = array(
-                    'id' => $dept->getId(),
-                    'name' => $dept->getName(),
-                    'ispublic' => $dept->isPublic(),
-                    'status' => $dept->isActive() ? 'active' : 'disabled'
-                );
+        try {
+            $depts = Dept::getDepartments();
+            $result = array();
+            
+            foreach ($depts as $id => $name) {
+                try {
+                    $dept = Dept::lookup($id);
+                    if ($dept) {
+                        $result[] = array(
+                            'id' => $dept->getId(),
+                            'name' => $dept->getName(),
+                            'ispublic' => $dept->isPublic(),
+                            'status' => $dept->isActive() ? 'active' : 'disabled'
+                        );
+                    }
+                } catch (Exception $e) {
+                    error_log('Error processing department ID ' . $id . ': ' . $e->getMessage());
+                    continue;
+                }
             }
+            
+            $this->success(array(
+                'count' => count($result),
+                'departments' => $result
+            ));
+        } catch (Exception $e) {
+            $this->error(500, 'Error fetching departments: ' . $e->getMessage());
         }
-        
-        $this->success(array(
-            'count' => count($result),
-            'departments' => $result
-        ));
     }
     
     public function getDepartment($deptId) {
@@ -843,41 +852,58 @@ class SimpleApiController {
     }
     
     public function getStaffList() {
-        $sql = 'SELECT staff_id FROM '.STAFF_TABLE.' ORDER BY lastname, firstname';
-        $result = db_query($sql);
-        
-        $staffList = array();
-        while ($row = db_fetch_row($result)) {
-            $staff = Staff::lookup($row[0]);
-            if ($staff) {
-                $dept = null;
-                if ($staff->getDeptId()) {
-                    if ($d = Dept::lookup($staff->getDeptId())) {
-                        $dept = array(
-                            'id' => $d->getId(),
-                            'name' => $d->getName()
+        try {
+            $sql = 'SELECT staff_id FROM '.STAFF_TABLE.' ORDER BY lastname, firstname';
+            $result = db_query($sql);
+            
+            if (!$result) {
+                $this->error(500, 'Database query failed');
+            }
+            
+            $staffList = array();
+            while ($row = db_fetch_row($result)) {
+                try {
+                    $staff = Staff::lookup($row[0]);
+                    if ($staff) {
+                        $dept = null;
+                        if ($staff->getDeptId()) {
+                            try {
+                                if ($d = Dept::lookup($staff->getDeptId())) {
+                                    $dept = array(
+                                        'id' => $d->getId(),
+                                        'name' => $d->getName()
+                                    );
+                                }
+                            } catch (Exception $e) {
+                                error_log('Error looking up department: ' . $e->getMessage());
+                            }
+                        }
+                        
+                        $staffList[] = array(
+                            'id' => $staff->getId(),
+                            'username' => $staff->getUsername(),
+                            'firstname' => $staff->getFirstName(),
+                            'lastname' => $staff->getLastName(),
+                            'name' => $staff->getName()->getFull(),
+                            'email' => $staff->getEmail(),
+                            'department' => $dept,
+                            'isactive' => $staff->isActive(),
+                            'isadmin' => $staff->isAdmin()
                         );
                     }
+                } catch (Exception $e) {
+                    error_log('Error processing staff ID ' . $row[0] . ': ' . $e->getMessage());
+                    continue;
                 }
-                
-                $staffList[] = array(
-                    'id' => $staff->getId(),
-                    'username' => $staff->getUsername(),
-                    'firstname' => $staff->getFirstName(),
-                    'lastname' => $staff->getLastName(),
-                    'name' => $staff->getName()->getFull(),
-                    'email' => $staff->getEmail(),
-                    'department' => $dept,
-                    'isactive' => $staff->isActive(),
-                    'isadmin' => $staff->isAdmin()
-                );
             }
+            
+            $this->success(array(
+                'count' => count($staffList),
+                'staff' => $staffList
+            ));
+        } catch (Exception $e) {
+            $this->error(500, 'Error fetching staff: ' . $e->getMessage());
         }
-        
-        $this->success(array(
-            'count' => count($staffList),
-            'staff' => $staffList
-        ));
     }
     
     public function getStaff($staffId) {
@@ -966,36 +992,49 @@ class SimpleApiController {
     }
     
     public function getTopics() {
-        $topics = Topic::getHelpTopics(false, true, false);
-        $result = array();
-        
-        foreach ($topics as $id => $name) {
-            $topic = Topic::lookup($id);
-            if ($topic) {
-                $dept = null;
-                if ($topic->getDeptId()) {
-                    if ($d = Dept::lookup($topic->getDeptId())) {
-                        $dept = array(
-                            'id' => $d->getId(),
-                            'name' => $d->getName()
+        try {
+            $topics = Topic::getHelpTopics(false, true, false);
+            $result = array();
+            
+            foreach ($topics as $id => $name) {
+                try {
+                    $topic = Topic::lookup($id);
+                    if ($topic) {
+                        $dept = null;
+                        if ($topic->getDeptId()) {
+                            try {
+                                if ($d = Dept::lookup($topic->getDeptId())) {
+                                    $dept = array(
+                                        'id' => $d->getId(),
+                                        'name' => $d->getName()
+                                    );
+                                }
+                            } catch (Exception $e) {
+                                error_log('Error looking up department: ' . $e->getMessage());
+                            }
+                        }
+                        
+                        $result[] = array(
+                            'id' => $topic->getId(),
+                            'topic' => $topic->getName(),
+                            'department' => $dept,
+                            'ispublic' => $topic->isPublic(),
+                            'isactive' => $topic->isActive()
                         );
                     }
+                } catch (Exception $e) {
+                    error_log('Error processing topic ID ' . $id . ': ' . $e->getMessage());
+                    continue;
                 }
-                
-                $result[] = array(
-                    'id' => $topic->getId(),
-                    'topic' => $topic->getName(),
-                    'department' => $dept,
-                    'ispublic' => $topic->isPublic(),
-                    'isactive' => $topic->isActive()
-                );
             }
+            
+            $this->success(array(
+                'count' => count($result),
+                'topics' => $result
+            ));
+        } catch (Exception $e) {
+            $this->error(500, 'Error fetching topics: ' . $e->getMessage());
         }
-        
-        $this->success(array(
-            'count' => count($result),
-            'topics' => $result
-        ));
     }
     
     public function getTopic($topicId) {
@@ -1087,32 +1126,51 @@ class SimpleApiController {
     }
     
     public function getOrganizations() {
-        $sql = 'SELECT id FROM '.ORGANIZATION_TABLE.' ORDER BY name';
-        $result = db_query($sql);
-        
-        $organizations = array();
-        while ($row = db_fetch_row($result)) {
-            $org = Organization::lookup($row[0]);
-            if ($org) {
-                // Get user count for the organization
-                $userCount = $org->getUserCount();
-                
-                $organizations[] = array(
-                    'id' => $org->getId(),
-                    'name' => $org->getName(),
-                    'website' => $org->getWebsite(),
-                    'phone' => $org->getPhoneNumber(),
-                    'user_count' => $userCount,
-                    'created' => $org->getCreateDate(),
-                    'updated' => $org->getUpdateDate()
-                );
+        try {
+            $sql = 'SELECT id FROM '.ORGANIZATION_TABLE.' ORDER BY name';
+            $result = db_query($sql);
+            
+            if (!$result) {
+                $this->error(500, 'Database query failed');
             }
+            
+            $organizations = array();
+            while ($row = db_fetch_row($result)) {
+                try {
+                    $org = Organization::lookup($row[0]);
+                    if ($org) {
+                        // Get user count for the organization using SQL query
+                        $userCount = 0;
+                        $countSql = 'SELECT COUNT(*) FROM '.USER_TABLE.' WHERE org_id='.db_input($org->getId());
+                        $countResult = db_query($countSql);
+                        if ($countResult && ($countRow = db_fetch_row($countResult))) {
+                            $userCount = (int)$countRow[0];
+                        }
+                        
+                        $organizations[] = array(
+                            'id' => $org->getId(),
+                            'name' => $org->getName(),
+                            'website' => $org->getWebsite(),
+                            'phone' => $org->getPhoneNumber(),
+                            'user_count' => $userCount,
+                            'created' => $org->getCreateDate(),
+                            'updated' => $org->getUpdateDate()
+                        );
+                    }
+                } catch (Exception $e) {
+                    // Log error but continue with other organizations
+                    error_log('Error processing organization ID ' . $row[0] . ': ' . $e->getMessage());
+                    continue;
+                }
+            }
+            
+            $this->success(array(
+                'count' => count($organizations),
+                'organizations' => $organizations
+            ));
+        } catch (Exception $e) {
+            $this->error(500, 'Error fetching organizations: ' . $e->getMessage());
         }
-        
-        $this->success(array(
-            'count' => count($organizations),
-            'organizations' => $organizations
-        ));
     }
     
     public function getOrganization($orgId) {
@@ -1254,14 +1312,24 @@ class SimpleApiController {
                             }
                         }
                         
+                        // Extract primitive values to avoid circular references
+                        $userName = $user->getName();
+                        $userNameString = is_object($userName) ? $userName->getFull() : (string)$userName;
+                        
+                        $userCreated = $user->getCreateDate();
+                        $userCreatedString = is_object($userCreated) ? $userCreated->format('Y-m-d H:i:s') : (string)$userCreated;
+                        
+                        $userUpdated = $user->getUpdateDate();
+                        $userUpdatedString = is_object($userUpdated) ? $userUpdated->format('Y-m-d H:i:s') : (string)$userUpdated;
+                        
                         $users[] = array(
-                            'id' => $user->getId(),
-                            'name' => $user->getName()->getFull(),
-                            'email' => $user->getEmail(),
-                            'phone' => $user->getPhoneNumber(),
+                            'id' => (int)$user->getId(),
+                            'name' => $userNameString,
+                            'email' => (string)$user->getEmail(),
+                            'phone' => (string)$user->getPhoneNumber(),
                             'organization' => $org,
-                            'created' => $user->getCreateDate(),
-                            'updated' => $user->getUpdateDate()
+                            'created' => $userCreatedString,
+                            'updated' => $userUpdatedString
                         );
                     }
                 } catch (Exception $e) {
@@ -1277,6 +1345,8 @@ class SimpleApiController {
             ));
         } catch (Exception $e) {
             $this->error(500, 'Error fetching users: ' . $e->getMessage());
+        } catch (Error $e) {
+            $this->error(500, 'Fatal error fetching users: ' . $e->getMessage());
         }
     }
     
@@ -1382,62 +1452,87 @@ class SimpleApiController {
     }
     
     public function getTasks() {
-        $sql = 'SELECT id FROM '.TASK_TABLE.' ORDER BY created DESC';
-        $result = db_query($sql);
-        
-        $tasks = array();
-        while ($row = db_fetch_row($result)) {
-            $task = Task::lookup($row[0]);
-            if ($task) {
-                // Get department
-                $dept = null;
-                if ($task->getDeptId()) {
-                    if ($d = Dept::lookup($task->getDeptId())) {
-                        $dept = array(
-                            'id' => $d->getId(),
-                            'name' => $d->getName()
-                        );
-                    }
-                }
-                
-                // Get assignee (staff or team)
-                $assignee = null;
-                if ($task->getStaffId()) {
-                    if ($staff = Staff::lookup($task->getStaffId())) {
-                        $assignee = array(
-                            'type' => 'staff',
-                            'id' => $staff->getId(),
-                            'name' => $staff->getName()->getFull()
-                        );
-                    }
-                } elseif ($task->getTeamId()) {
-                    if ($team = Team::lookup($task->getTeamId())) {
-                        $assignee = array(
-                            'type' => 'team',
-                            'id' => $team->getId(),
-                            'name' => $team->getName()
-                        );
-                    }
-                }
-                
-                $tasks[] = array(
-                    'id' => $task->getId(),
-                    'number' => $task->getNumber(),
-                    'title' => $task->getTitle(),
-                    'status' => $task->isClosed() ? 'closed' : 'open',
-                    'department' => $dept,
-                    'assignee' => $assignee,
-                    'due_date' => $task->getDueDate(),
-                    'created' => $task->getCreateDate(),
-                    'updated' => $task->getUpdateDate()
-                );
+        try {
+            $sql = 'SELECT id FROM '.TASK_TABLE.' ORDER BY created DESC';
+            $result = db_query($sql);
+            
+            if (!$result) {
+                $this->error(500, 'Database query failed');
             }
+            
+            $tasks = array();
+            while ($row = db_fetch_row($result)) {
+                try {
+                    $task = Task::lookup($row[0]);
+                    if ($task) {
+                        // Get department
+                        $dept = null;
+                        if ($task->getDeptId()) {
+                            try {
+                                if ($d = Dept::lookup($task->getDeptId())) {
+                                    $dept = array(
+                                        'id' => $d->getId(),
+                                        'name' => $d->getName()
+                                    );
+                                }
+                            } catch (Exception $e) {
+                                error_log('Error looking up department: ' . $e->getMessage());
+                            }
+                        }
+                        
+                        // Get assignee (staff or team)
+                        $assignee = null;
+                        if ($task->getStaffId()) {
+                            try {
+                                if ($staff = Staff::lookup($task->getStaffId())) {
+                                    $assignee = array(
+                                        'type' => 'staff',
+                                        'id' => $staff->getId(),
+                                        'name' => $staff->getName()->getFull()
+                                    );
+                                }
+                            } catch (Exception $e) {
+                                error_log('Error looking up staff: ' . $e->getMessage());
+                            }
+                        } elseif ($task->getTeamId()) {
+                            try {
+                                if ($team = Team::lookup($task->getTeamId())) {
+                                    $assignee = array(
+                                        'type' => 'team',
+                                        'id' => $team->getId(),
+                                        'name' => $team->getName()
+                                    );
+                                }
+                            } catch (Exception $e) {
+                                error_log('Error looking up team: ' . $e->getMessage());
+                            }
+                        }
+                        
+                        $tasks[] = array(
+                            'id' => $task->getId(),
+                            'number' => $task->getNumber(),
+                            'title' => $task->getTitle(),
+                            'status' => $task->isClosed() ? 'closed' : 'open',
+                            'department' => $dept,
+                            'assignee' => $assignee,
+                            'due_date' => $task->getDueDate(),
+                            'created' => $task->getCreateDate(),
+                            'updated' => $task->getUpdateDate()
+                        );
+                    }
+                } catch (Exception $e) {
+                    error_log('Error processing task ID ' . $row[0] . ': ' . $e->getMessage());
+                    continue;
+                }
+            }
+            
+            $this->success(array(
+                'count' => count($tasks),
+                'tasks' => $tasks
+            ));
+        } catch (Exception $e) {
+            $this->error(500, 'Error fetching tasks: ' . $e->getMessage());
         }
-        
-        $this->success(array(
-            'count' => count($tasks),
-            'tasks' => $tasks
-        ));
     }
     
     public function getTask($taskId) {
@@ -1573,40 +1668,57 @@ class SimpleApiController {
     }
     
     public function getFAQs() {
-        $sql = 'SELECT faq_id FROM '.FAQ_TABLE.' ORDER BY created DESC';
-        $result = db_query($sql);
-        
-        $faqs = array();
-        while ($row = db_fetch_row($result)) {
-            $faq = FAQ::lookup($row[0]);
-            if ($faq) {
-                // Get category info
-                $category = null;
-                if ($faq->getCategoryId()) {
-                    if ($cat = Category::lookup($faq->getCategoryId())) {
-                        $category = array(
-                            'id' => $cat->getId(),
-                            'name' => $cat->getName()
+        try {
+            $sql = 'SELECT faq_id FROM '.FAQ_TABLE.' ORDER BY created DESC';
+            $result = db_query($sql);
+            
+            if (!$result) {
+                $this->error(500, 'Database query failed');
+            }
+            
+            $faqs = array();
+            while ($row = db_fetch_row($result)) {
+                try {
+                    $faq = FAQ::lookup($row[0]);
+                    if ($faq) {
+                        // Get category info
+                        $category = null;
+                        if ($faq->getCategoryId()) {
+                            try {
+                                if ($cat = Category::lookup($faq->getCategoryId())) {
+                                    $category = array(
+                                        'id' => $cat->getId(),
+                                        'name' => $cat->getName()
+                                    );
+                                }
+                            } catch (Exception $e) {
+                                error_log('Error looking up category: ' . $e->getMessage());
+                            }
+                        }
+                        
+                        $faqs[] = array(
+                            'id' => $faq->getId(),
+                            'question' => $faq->getQuestion(),
+                            'answer' => $faq->getAnswerWithImages(),
+                            'category' => $category,
+                            'ispublished' => $faq->isPublished(),
+                            'created' => $faq->getCreateDate(),
+                            'updated' => $faq->getUpdateDate()
                         );
                     }
+                } catch (Exception $e) {
+                    error_log('Error processing FAQ ID ' . $row[0] . ': ' . $e->getMessage());
+                    continue;
                 }
-                
-                $faqs[] = array(
-                    'id' => $faq->getId(),
-                    'question' => $faq->getQuestion(),
-                    'answer' => $faq->getAnswerWithImages(),
-                    'category' => $category,
-                    'ispublished' => $faq->isPublished(),
-                    'created' => $faq->getCreateDate(),
-                    'updated' => $faq->getUpdateDate()
-                );
             }
+            
+            $this->success(array(
+                'count' => count($faqs),
+                'faqs' => $faqs
+            ));
+        } catch (Exception $e) {
+            $this->error(500, 'Error fetching FAQs: ' . $e->getMessage());
         }
-        
-        $this->success(array(
-            'count' => count($faqs),
-            'faqs' => $faqs
-        ));
     }
     
     public function getFAQ($faqId) {
@@ -1676,35 +1788,51 @@ class SimpleApiController {
     }
     
     public function getFAQCategories() {
-        $categories = Category::getPublicCategories();
-        $result = array();
-        
-        // Get all categories (public and private)
-        $sql = 'SELECT category_id FROM '.FAQ_CATEGORY_TABLE.' ORDER BY name';
-        $res = db_query($sql);
-        
-        while ($row = db_fetch_row($res)) {
-            $category = Category::lookup($row[0]);
-            if ($category) {
-                // Count FAQs in this category
-                $faqCount = $category->getFAQCount();
-                
-                $result[] = array(
-                    'id' => $category->getId(),
-                    'name' => $category->getName(),
-                    'description' => $category->getDescription(),
-                    'ispublic' => $category->isPublic(),
-                    'faq_count' => $faqCount,
-                    'created' => $category->getCreateDate(),
-                    'updated' => $category->getUpdateDate()
-                );
+        try {
+            // Get all categories (public and private)
+            $sql = 'SELECT category_id FROM '.FAQ_CATEGORY_TABLE.' ORDER BY name';
+            $res = db_query($sql);
+            
+            if (!$res) {
+                $this->error(500, 'Database query failed');
             }
+            
+            $result = array();
+            while ($row = db_fetch_row($res)) {
+                try {
+                    $category = Category::lookup($row[0]);
+                    if ($category) {
+                        $faqCount = 0;
+                        $countSql = 'SELECT COUNT(*) FROM '.FAQ_TABLE.' WHERE category_id='.db_input($category->getId());
+                        $countResult = db_query($countSql);
+                        if ($countResult && ($countRow = db_fetch_row($countResult))) {
+                            $faqCount = (int)$countRow[0];
+                        }
+                        
+                        $result[] = array(
+                            'id' => $category->getId(),
+                            'name' => $category->getName(),
+                            'description' => $category->getDescription(),
+                            'ispublic' => $category->isPublic(),
+                            'faq_count' => $faqCount,
+                            'created' => $category->getCreateDate(),
+                            'updated' => $category->getUpdateDate()
+                        );
+                    }
+                } catch (Exception $e) {
+                    // Log error but continue with other categories
+                    error_log('Error processing category ID ' . $row[0] . ': ' . $e->getMessage());
+                    continue;
+                }
+            }
+            
+            $this->success(array(
+                'count' => count($result),
+                'categories' => $result
+            ));
+        } catch (Exception $e) {
+            $this->error(500, 'Error fetching FAQ categories: ' . $e->getMessage());
         }
-        
-        $this->success(array(
-            'count' => count($result),
-            'categories' => $result
-        ));
     }
     
     public function getFAQCategory($categoryId) {
@@ -1784,40 +1912,57 @@ class SimpleApiController {
     }
     
     public function getCannedResponses() {
-        $sql = 'SELECT canned_response_id FROM '.CANNED_TABLE.' ORDER BY title';
-        $result = db_query($sql);
-        
-        $responses = array();
-        while ($row = db_fetch_row($result)) {
-            $canned = Canned::lookup($row[0]);
-            if ($canned) {
-                // Get department info
-                $dept = null;
-                if ($canned->getDeptId()) {
-                    if ($d = Dept::lookup($canned->getDeptId())) {
-                        $dept = array(
-                            'id' => $d->getId(),
-                            'name' => $d->getName()
+        try {
+            $sql = 'SELECT canned_response_id FROM '.CANNED_TABLE.' ORDER BY title';
+            $result = db_query($sql);
+            
+            if (!$result) {
+                $this->error(500, 'Database query failed');
+            }
+            
+            $responses = array();
+            while ($row = db_fetch_row($result)) {
+                try {
+                    $canned = Canned::lookup($row[0]);
+                    if ($canned) {
+                        // Get department info
+                        $dept = null;
+                        if ($canned->getDeptId()) {
+                            try {
+                                if ($d = Dept::lookup($canned->getDeptId())) {
+                                    $dept = array(
+                                        'id' => $d->getId(),
+                                        'name' => $d->getName()
+                                    );
+                                }
+                            } catch (Exception $e) {
+                                error_log('Error looking up department: ' . $e->getMessage());
+                            }
+                        }
+                        
+                        $responses[] = array(
+                            'id' => $canned->getId(),
+                            'title' => $canned->getTitle(),
+                            'response' => $canned->getResponse(),
+                            'department' => $dept,
+                            'isenabled' => $canned->isEnabled(),
+                            'created' => $canned->created,
+                            'updated' => $canned->updated
                         );
                     }
+                } catch (Exception $e) {
+                    error_log('Error processing canned response ID ' . $row[0] . ': ' . $e->getMessage());
+                    continue;
                 }
-                
-                $responses[] = array(
-                    'id' => $canned->getId(),
-                    'title' => $canned->getTitle(),
-                    'response' => $canned->getResponse(),
-                    'department' => $dept,
-                    'isenabled' => $canned->isEnabled(),
-                    'created' => $canned->created,
-                    'updated' => $canned->updated
-                );
             }
+            
+            $this->success(array(
+                'count' => count($responses),
+                'canned_responses' => $responses
+            ));
+        } catch (Exception $e) {
+            $this->error(500, 'Error fetching canned responses: ' . $e->getMessage());
         }
-        
-        $this->success(array(
-            'count' => count($responses),
-            'canned_responses' => $responses
-        ));
     }
     
     public function getCannedResponse($cannedId) {
