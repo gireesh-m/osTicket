@@ -250,17 +250,13 @@ class SimpleApiController {
     
     public function getTicket($ticketId) {
         try {
-            error_log("getTicket: Looking up ticket ID: $ticketId");
             
             // Look up the ticket
             $ticket = Ticket::lookup($ticketId);
             
             if (!$ticket) {
-                error_log("getTicket: Ticket not found with ID: $ticketId");
                 $this->error(404, 'Ticket not found');
             }
-            
-            error_log("getTicket: Successfully loaded ticket #" . $ticket->getNumber());
             
             // Get thread entries (full conversation)
             $entries = array();
@@ -479,8 +475,6 @@ class SimpleApiController {
             } catch (Exception $e) {
                 error_log("getTicket: Error retrieving merge info: " . $e->getMessage());
             }
-            
-            error_log("getTicket: Successfully retrieved all ticket data for ticket ID: $ticketId");
             
             // Try to get reopen count safely
             $reopenCount = 0;
