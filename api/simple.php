@@ -42,6 +42,8 @@
 
 **********************************************************************/
 
+
+
 require 'api.inc.php';
 require_once INCLUDE_DIR.'class.ticket.php';
 require_once INCLUDE_DIR.'class.json.php';
@@ -228,7 +230,7 @@ class SimpleApiController {
             'staff' => array(
                 'id' => $staff->getId(),
                 'name' => $staff->getName()->getFull(),
-                'email' => $staff->getEmail()
+                'email' => (string) $staff->getEmail()
             ),
             'posted' => true
         ));
@@ -264,7 +266,7 @@ class SimpleApiController {
                     $entryData['staff'] = array(
                         'id' => $staff->getId(),
                         'name' => $staff->getName()->getFull(),
-                        'email' => $staff->getEmail()
+                        'email' => (string) $staff->getEmail()
                     );
                 }
                 
@@ -307,7 +309,7 @@ class SimpleApiController {
                 'type' => 'staff',
                 'id' => $staff->getId(),
                 'name' => $staff->getName()->getFull(),
-                'email' => $staff->getEmail()
+                'email' => (string) $staff->getEmail()
             );
         } elseif ($team = $ticket->getTeam()) {
             $assignee = array(
@@ -333,7 +335,7 @@ class SimpleApiController {
             $collaborators[] = array(
                 'id' => $collab->getUserId(),
                 'name' => $collab->getName()->getFull(),
-                'email' => $collab->getEmail()
+                'email' => (string) $collab->getEmail()
             );
         }
         
@@ -415,7 +417,7 @@ class SimpleApiController {
             'user' => array(
                 'id' => $ticket->getUserId(),
                 'name' => $ticket->getName()->getFull(),
-                'email' => $ticket->getEmail(),
+                'email' => (string) $ticket->getEmail(),
                 'phone' => $ticket->getPhoneNumber()
             ),
             'collaborators' => array(
@@ -601,7 +603,7 @@ class SimpleApiController {
                     'user' => array(
                         'id' => $ticket->getUserId(),
                         'name' => $ticket->getName()->getFull(),
-                        'email' => $ticket->getEmail()
+                        'email' => (string) $ticket->getEmail()
                     ),
                     'created' => $ticket->getCreateDate(),
                     'updated' => $ticket->getUpdateDate()
@@ -713,7 +715,7 @@ class SimpleApiController {
                 $manager = array(
                     'id' => $mgr->getId(),
                     'name' => $mgr->getName()->getFull(),
-                    'email' => $mgr->getEmail()
+                    'email' => (string) $mgr->getEmail()
                 );
             }
         }
@@ -834,7 +836,7 @@ class SimpleApiController {
             'id' => $staff->getId(),
             'username' => $staff->getUsername(),
             'name' => $staff->getName()->getFull(),
-            'email' => $staff->getEmail(),
+            'email' => (string) $staff->getEmail(),
             'created' => $staff->created  // Direct field access
         ), 201);
     }
@@ -873,7 +875,7 @@ class SimpleApiController {
                             'firstname' => $staff->getFirstName(),
                             'lastname' => $staff->getLastName(),
                             'name' => $staff->getName()->getFull(),
-                            'email' => $staff->getEmail(),
+                            'email' => (string) $staff->getEmail(),
                             'department' => $dept,
                             'isactive' => $staff->isActive(),
                             'isadmin' => $staff->isAdmin()
@@ -918,7 +920,7 @@ class SimpleApiController {
             'firstname' => $staff->getFirstName(),
             'lastname' => $staff->getLastName(),
             'name' => $staff->getName()->getFull(),
-            'email' => $staff->getEmail(),
+            'email' => (string) $staff->getEmail(),
             'phone' => $staff->getPhoneNumber(),
             'mobile' => $staff->getMobileNumber(),
             'department' => $dept,
@@ -1179,7 +1181,7 @@ class SimpleApiController {
                 $users[] = array(
                     'id' => $user->getId(),
                     'name' => $user->getName()->getFull(),
-                    'email' => $user->getEmail(),
+                    'email' => (string) $user->getEmail(),
                     'phone' => $user->getPhoneNumber()
                 );
             }
@@ -1263,7 +1265,7 @@ class SimpleApiController {
         $this->success(array(
             'id' => $user->getId(),
             'name' => $user->getName()->getFull(),
-            'email' => $user->getEmail(),
+            'email' => (string) $user->getEmail(),
             'phone' => $user->getPhoneNumber(),
             'organization' => $org,
             'created' => $user->created
@@ -1381,7 +1383,7 @@ class SimpleApiController {
         $this->success(array(
             'id' => $user->getId(),
             'name' => $user->getName()->getFull(),
-            'email' => $user->getEmail(),
+            'email' => (string) $user->getEmail(),
             'phone' => $user->getPhoneNumber(),
             'phone_mobile' => $user->getVar('phone_mobile'),  // Use getVar for custom/dynamic fields
             'organization' => $org,
@@ -1549,7 +1551,7 @@ class SimpleApiController {
                     'type' => 'staff',
                     'id' => $staff->getId(),
                     'name' => $staff->getName()->getFull(),
-                    'email' => $staff->getEmail()
+                    'email' => (string) $staff->getEmail()
                 );
             }
         } elseif ($task->getTeamId()) {
@@ -1584,7 +1586,7 @@ class SimpleApiController {
                     $entryData['staff'] = array(
                         'id' => $staff->getId(),
                         'name' => $staff->getName()->getFull(),
-                        'email' => $staff->getEmail()
+                        'email' => (string) $staff->getEmail()
                     );
                 }
                 
