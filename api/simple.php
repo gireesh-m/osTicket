@@ -42,8 +42,6 @@
 
 **********************************************************************/
 
-
-
 require 'api.inc.php';
 require_once INCLUDE_DIR.'class.ticket.php';
 require_once INCLUDE_DIR.'class.json.php';
@@ -59,6 +57,20 @@ require_once INCLUDE_DIR.'class.canned.php';
 header('Content-Type: application/json');
 
 class SimpleApiController {
+    
+    // Helper function to safely get organization field values
+    private function getOrgField($org, $fieldName, $default = '') {
+        try {
+            foreach ($org->getDynamicData() as $entry) {
+                if ($answer = $entry->getAnswer($fieldName)) {
+                    return (string) $answer;
+                }
+            }
+        } catch (Exception $e) {
+            error_log("Error getting org field '$fieldName': " . $e->getMessage());
+        }
+        return $default;
+    }
     
     private function getRequestBody() {
         $body = file_get_contents('php://input');
@@ -237,207 +249,308 @@ class SimpleApiController {
     }
     
     public function getTicket($ticketId) {
-        // Look up the ticket
-        $ticket = Ticket::lookup($ticketId);
-        
-        if (!$ticket) {
-            $this->error(404, 'Ticket not found');
-        }
-        
-        // Get thread entries (full conversation)
-        $entries = array();
-        $thread = $ticket->getThread();
-        
-        foreach ($thread->getEntries() as $entry) {
-            $type = $entry->getType();
+        try {
+            error_log("getTicket: Looking up ticket ID: $ticketId");
             
-            // M = Message from user, R = Response from agent, N = Internal note
-            if ($type == 'M' || $type == 'R') {
-                $entryData = array(
-                    'id' => $entry->getId(),
-                    'type' => $type == 'M' ? 'user_message' : 'agent_response',
-                    'poster' => $entry->getName()->getFull(),
-                    'message' => $entry->getBody()->getClean(),
-                    'created' => $entry->getCreateDate(),
-                );
+            // Look up the ticket
+            $ticket = Ticket::lookup($ticketId);
+            
+            if (!$ticket) {
+                error_log("getTicket: Ticket not found with ID: $ticketId");
+                $this->error(404, 'Ticket not found');
+            }
+            
+            error_log("getTicket: Successfully loaded ticket #" . $ticket->getNumber());
+            
+            // Get thread entries (full conversation)
+            $entries = array();
+            try {
+                $thread = $ticket->getThread();
                 
-                // Add staff info if it's an agent response
-                if ($type == 'R' && ($staff = $entry->getStaff())) {
-                    $entryData['staff'] = array(
+                if (!$thread) {
+                    error_log("getTicket: Warning - No thread found for ticket ID: $ticketId");
+                } else {
+                    foreach ($thread->getEntries() as $entry) {
+                        try {
+                            $type = $entry->getType();
+                            
+                            // M = Message from user, R = Response from agent, N = Internal note
+                            if ($type == 'M' || $type == 'R') {
+                                $entryData = array(
+                                    'id' => $entry->getId(),
+                                    'type' => $type == 'M' ? 'user_message' : 'agent_response',
+                                    'poster' => $entry->getName()->getFull(),
+                                    'message' => $entry->getBody()->getClean(),
+                                    'created' => $entry->getCreateDate(),
+                                );
+                                
+                                // Add staff info if it's an agent response
+                                if ($type == 'R' && ($staff = $entry->getStaff())) {
+                                    $entryData['staff'] = array(
+                                        'id' => $staff->getId(),
+                                        'name' => $staff->getName()->getFull(),
+                                        'email' => (string) $staff->getEmail()
+                                    );
+                                }
+                                
+                                $entries[] = $entryData;
+                            }
+                        } catch (Exception $e) {
+                            error_log("getTicket: Error processing thread entry: " . $e->getMessage());
+                            continue;
+                        }
+                    }
+                }
+            } catch (Exception $e) {
+                error_log("getTicket: Error retrieving thread entries: " . $e->getMessage());
+            }
+            
+            // Get status
+            $status = null;
+            $statusName = 'Open';
+            $isClosed = false;
+            try {
+                $status = $ticket->getStatus();
+                $statusName = $status ? $status->getName() : 'Open';
+                $isClosed = $ticket->isClosed();
+            } catch (Exception $e) {
+                error_log("getTicket: Error retrieving status: " . $e->getMessage());
+            }
+            
+            // Get priority
+            $priorityData = null;
+            try {
+                $priority = $ticket->getPriority();
+                if ($priority) {
+                    $priorityData = array(
+                        'id' => $priority->getId(),
+                        'name' => $priority->getDesc(),
+                        'priority' => $priority->getTag(),
+                        'urgency' => $priority->getUrgency(),
+                        'color' => $priority->getColor()
+                    );
+                }
+            } catch (Exception $e) {
+                error_log("getTicket: Error retrieving priority: " . $e->getMessage());
+            }
+            
+            // Get department
+            $deptData = null;
+            try {
+                $dept = $ticket->getDept();
+                if ($dept) {
+                    $deptData = array(
+                        'id' => $dept->getId(),
+                        'name' => $dept->getName()
+                    );
+                }
+            } catch (Exception $e) {
+                error_log("getTicket: Error retrieving department: " . $e->getMessage());
+            }
+            
+            // Get assigned staff/team
+            $assignee = null;
+            try {
+                if ($staff = $ticket->getStaff()) {
+                    $assignee = array(
+                        'type' => 'staff',
                         'id' => $staff->getId(),
                         'name' => $staff->getName()->getFull(),
                         'email' => (string) $staff->getEmail()
                     );
-                }
-                
-                $entries[] = $entryData;
-            }
-        }
-        
-        // Get status
-        $status = $ticket->getStatus();
-        $statusName = $status ? $status->getName() : 'Open';
-        $isClosed = $ticket->isClosed();
-        
-        // Get priority
-        $priority = $ticket->getPriority();
-        $priorityData = null;
-        if ($priority) {
-            $priorityData = array(
-                'id' => $priority->getId(),
-                'name' => $priority->getDesc(),
-                'priority' => $priority->getTag(),
-                'urgency' => $priority->getUrgency(),
-                'color' => $priority->getColor()
-            );
-        }
-        
-        // Get department
-        $dept = $ticket->getDept();
-        $deptData = null;
-        if ($dept) {
-            $deptData = array(
-                'id' => $dept->getId(),
-                'name' => $dept->getName()
-            );
-        }
-        
-        // Get assigned staff/team
-        $assignee = null;
-        if ($staff = $ticket->getStaff()) {
-            $assignee = array(
-                'type' => 'staff',
-                'id' => $staff->getId(),
-                'name' => $staff->getName()->getFull(),
-                'email' => (string) $staff->getEmail()
-            );
-        } elseif ($team = $ticket->getTeam()) {
-            $assignee = array(
-                'type' => 'team',
-                'id' => $team->getId(),
-                'name' => $team->getName()
-            );
-        }
-        
-        // Get topic
-        $topic = $ticket->getTopic();
-        $topicData = null;
-        if ($topic) {
-            $topicData = array(
-                'id' => $topic->getId(),
-                'name' => $topic->getName()
-            );
-        }
-        
-        // Get collaborators
-        $collaborators = array();
-        foreach ($ticket->getCollaborators() as $collab) {
-            $collaborators[] = array(
-                'id' => $collab->getUserId(),
-                'name' => $collab->getName()->getFull(),
-                'email' => (string) $collab->getEmail()
-            );
-        }
-        
-        // Get attachments
-        $attachments = array();
-        foreach ($thread->getEntries() as $entry) {
-            foreach ($entry->getAttachments() as $att) {
-                $attachments[] = array(
-                    'id' => $att->getId(),
-                    'filename' => $att->getFilename(),
-                    'size' => $att->getSize(),
-                    'type' => $att->getType()
-                );
-            }
-        }
-        
-        // Get linked tickets
-        // Note: Linked tickets feature not available in standard osTicket
-        $linkedTickets = array();
-        
-        // Check if ticket is merged
-        $mergedInfo = null;
-        if ($ticket->getMergeType()) {
-            $parentId = $ticket->getMergeParentId();
-            if ($parentId && ($parentTicket = Ticket::lookup($parentId))) {
-                $mergedInfo = array(
-                    'is_merged' => true,
-                    'merged_into' => array(
-                        'ticket_id' => $parentTicket->getId(),
-                        'ticket_number' => $parentTicket->getNumber(),
-                        'subject' => $parentTicket->getSubject()
-                    )
-                );
-            }
-        } else {
-            // Check if other tickets are merged into this one
-            $sql = 'SELECT ticket_id FROM '.TICKET_TABLE.' WHERE pid='.db_input($ticketId);
-            $result = db_query($sql);
-            $childTickets = array();
-            while ($row = db_fetch_row($result)) {
-                if ($childTicket = Ticket::lookup($row[0])) {
-                    $childTickets[] = array(
-                        'ticket_id' => $childTicket->getId(),
-                        'ticket_number' => $childTicket->getNumber(),
-                        'subject' => $childTicket->getSubject()
+                } elseif ($team = $ticket->getTeam()) {
+                    $assignee = array(
+                        'type' => 'team',
+                        'id' => $team->getId(),
+                        'name' => $team->getName()
                     );
                 }
+            } catch (Exception $e) {
+                error_log("getTicket: Error retrieving assignee: " . $e->getMessage());
             }
-            if (count($childTickets) > 0) {
-                $mergedInfo = array(
-                    'is_parent' => true,
-                    'merged_tickets' => $childTickets
-                );
+            
+            // Get topic
+            $topicData = null;
+            try {
+                $topic = $ticket->getTopic();
+                if ($topic) {
+                    $topicData = array(
+                        'id' => $topic->getId(),
+                        'name' => $topic->getName()
+                    );
+                }
+            } catch (Exception $e) {
+                error_log("getTicket: Error retrieving topic: " . $e->getMessage());
             }
+            
+            // Get collaborators
+            $collaborators = array();
+            try {
+                foreach ($ticket->getCollaborators() as $collab) {
+                    try {
+                        $collaborators[] = array(
+                            'id' => $collab->getUserId(),
+                            'name' => $collab->getName()->getFull(),
+                            'email' => (string) $collab->getEmail()
+                        );
+                    } catch (Exception $e) {
+                        error_log("getTicket: Error processing collaborator: " . $e->getMessage());
+                        continue;
+                    }
+                }
+            } catch (Exception $e) {
+                error_log("getTicket: Error retrieving collaborators: " . $e->getMessage());
+            }
+            
+            // Get attachments
+            $attachments = array();
+            try {
+                if (isset($thread) && $thread) {
+                    foreach ($thread->getEntries() as $entry) {
+                        try {
+                            foreach ($entry->getAttachments() as $att) {
+                                try {
+                                    $attachments[] = array(
+                                        'id' => $att->getId(),
+                                        'filename' => $att->getFilename(),
+                                        'size' => $att->getSize(),
+                                        'type' => $att->getType()
+                                    );
+                                } catch (Exception $e) {
+                                    error_log("getTicket: Error processing attachment: " . $e->getMessage());
+                                    continue;
+                                }
+                            }
+                        } catch (Exception $e) {
+                            error_log("getTicket: Error processing entry attachments: " . $e->getMessage());
+                            continue;
+                        }
+                    }
+                }
+            } catch (Exception $e) {
+                error_log("getTicket: Error retrieving attachments: " . $e->getMessage());
+            }
+            
+            // Get linked tickets
+            // Note: Linked tickets feature not available in standard osTicket
+            $linkedTickets = array();
+            
+            // Check if ticket is merged
+            $mergedInfo = null;
+            try {
+                if ($ticket->getMergeType()) {
+                    $parentId = $ticket->getPid();
+                    if ($parentId && ($parentTicket = Ticket::lookup($parentId))) {
+                        $mergedInfo = array(
+                            'is_merged' => true,
+                            'merged_into' => array(
+                                'ticket_id' => $parentTicket->getId(),
+                                'ticket_number' => $parentTicket->getNumber(),
+                                'subject' => $parentTicket->getSubject()
+                            )
+                        );
+                    }
+                } else {
+                    // Check if other tickets are merged into this one
+                    $sql = 'SELECT ticket_id FROM '.TICKET_TABLE.' WHERE pid='.db_input($ticketId);
+                    $result = db_query($sql);
+                    $childTickets = array();
+                    while ($row = db_fetch_row($result)) {
+                        try {
+                            if ($childTicket = Ticket::lookup($row[0])) {
+                                $childTickets[] = array(
+                                    'ticket_id' => $childTicket->getId(),
+                                    'ticket_number' => $childTicket->getNumber(),
+                                    'subject' => $childTicket->getSubject()
+                                );
+                            }
+                        } catch (Exception $e) {
+                            error_log("getTicket: Error processing child ticket: " . $e->getMessage());
+                            continue;
+                        }
+                    }
+                    if (count($childTickets) > 0) {
+                        $mergedInfo = array(
+                            'is_parent' => true,
+                            'merged_tickets' => $childTickets
+                        );
+                    }
+                }
+            } catch (Exception $e) {
+                error_log("getTicket: Error retrieving merge info: " . $e->getMessage());
+            }
+            
+            error_log("getTicket: Successfully retrieved all ticket data for ticket ID: $ticketId");
+            
+            // Try to get reopen count safely
+            $reopenCount = 0;
+            try {
+                // Try to access the reopen_count field
+                if (isset($ticket->reopen_count)) {
+                    $reopenCount = $ticket->reopen_count;
+                } elseif (method_exists($ticket, 'getField')) {
+                    $field = $ticket->getField('reopen_count');
+                    if ($field) {
+                        $reopenCount = $field->getValue();
+                    }
+                }
+            } catch (Exception $e) {
+                error_log("getTicket: Could not retrieve reopen count: " . $e->getMessage());
+                $reopenCount = $ticket->isReopened() ? 1 : 0;
+            }
+            
+            $this->success(array(
+                'ticket_id' => $ticket->getId(),
+                'ticket_number' => $ticket->getNumber(),
+                'subject' => $ticket->getSubject(),
+                'status' => array(
+                    'name' => $statusName,
+                    'id' => $status ? $status->getId() : null,
+                    'is_closed' => $isClosed
+                ),
+                'priority' => $priorityData,
+                'department' => $deptData,
+                'topic' => $topicData,
+                'assignee' => $assignee,
+                'source' => $ticket->getSource(),
+                'ip_address' => $ticket->getIP(),
+                'is_overdue' => $ticket->isOverdue(),
+                'is_answered' => $ticket->isAnswered(),
+                'is_reopened' => $ticket->isReopened(),
+                'reopen_count' => $reopenCount,
+                'created' => $ticket->getCreateDate(),
+                'updated' => $ticket->getUpdateDate(),
+                'closed' => $isClosed ? $ticket->getCloseDate() : null,
+                'due_date' => $ticket->getDueDate(),
+                'user' => array(
+                    'id' => $ticket->getUserId(),
+                    'name' => $ticket->getName()->getFull(),
+                    'email' => (string) $ticket->getEmail(),
+                    'phone' => $ticket->getPhoneNumber()
+                ),
+                'collaborators' => array(
+                    'count' => count($collaborators),
+                    'collaborators' => $collaborators
+                ),
+                'attachments' => array(
+                    'count' => count($attachments),
+                    'attachments' => $attachments
+                ),
+                'linked_tickets' => array(
+                    'count' => count($linkedTickets),
+                    'tickets' => $linkedTickets
+                ),
+                'merge_info' => $mergedInfo,
+                'thread' => array(
+                    'total_entries' => count($entries),
+                    'entries' => $entries
+                )
+            ));
+        } catch (Exception $e) {
+            error_log("getTicket: Fatal error processing ticket ID $ticketId: " . $e->getMessage());
+            error_log("getTicket: Stack trace: " . $e->getTraceAsString());
+            $this->error(500, 'Error retrieving ticket: ' . $e->getMessage());
         }
-        
-        $this->success(array(
-            'ticket_id' => $ticket->getId(),
-            'ticket_number' => $ticket->getNumber(),
-            'subject' => $ticket->getSubject(),
-            'status' => array(
-                'name' => $statusName,
-                'id' => $status ? $status->getId() : null,
-                'is_closed' => $isClosed
-            ),
-            'priority' => $priorityData,
-            'department' => $deptData,
-            'topic' => $topicData,
-            'assignee' => $assignee,
-            'source' => $ticket->getSource(),
-            'ip_address' => $ticket->getIP(),
-            'is_overdue' => $ticket->isOverdue(),
-            'is_answered' => $ticket->isAnswered(),
-            'reopen_count' => $ticket->getReopenCount(),
-            'created' => $ticket->getCreateDate(),
-            'updated' => $ticket->getUpdateDate(),
-            'closed' => $isClosed ? $ticket->getCloseDate() : null,
-            'due_date' => $ticket->getDueDate(),
-            'user' => array(
-                'id' => $ticket->getUserId(),
-                'name' => $ticket->getName()->getFull(),
-                'email' => (string) $ticket->getEmail(),
-                'phone' => $ticket->getPhoneNumber()
-            ),
-            'collaborators' => array(
-                'count' => count($collaborators),
-                'collaborators' => $collaborators
-            ),
-            'attachments' => array(
-                'count' => count($attachments),
-                'attachments' => $attachments
-            ),
-            'linked_tickets' => array(
-                'count' => count($linkedTickets),
-                'tickets' => $linkedTickets
-            ),
-            'merge_info' => $mergedInfo,
-            'thread' => array(
-                'total_entries' => count($entries),
-                'entries' => $entries
-            )
-        ));
     }
     
     public function getTickets() {
@@ -905,14 +1018,22 @@ class SimpleApiController {
         
         // Get department info
         $dept = null;
-        if ($staff->getDeptId()) {
-            if ($d = Dept::lookup($staff->getDeptId())) {
-                $dept = array(
-                    'id' => $d->getId(),
-                    'name' => $d->getName()
-                );
+        try {
+            if ($staff->getDeptId()) {
+                if ($d = Dept::lookup($staff->getDeptId())) {
+                    $dept = array(
+                        'id' => $d->getId(),
+                        'name' => $d->getName()
+                    );
+                }
             }
+        } catch (Exception $e) {
+            error_log("getStaff: Error retrieving department: " . $e->getMessage());
         }
+        
+        // Get phone numbers - these are direct properties on Staff
+        $phone = isset($staff->phone) ? $staff->phone : '';
+        $mobile = isset($staff->mobile) ? $staff->mobile : '';
         
         $this->success(array(
             'id' => $staff->getId(),
@@ -921,8 +1042,8 @@ class SimpleApiController {
             'lastname' => $staff->getLastName(),
             'name' => $staff->getName()->getFull(),
             'email' => (string) $staff->getEmail(),
-            'phone' => $staff->getPhoneNumber(),
-            'mobile' => $staff->getMobileNumber(),
+            'phone' => $phone,
+            'mobile' => $mobile,
             'department' => $dept,
             'isactive' => $staff->isActive(),
             'isadmin' => $staff->isAdmin(),
@@ -1109,8 +1230,8 @@ class SimpleApiController {
         $this->success(array(
             'id' => $org->getId(),
             'name' => $org->getName(),
-            'website' => $org->getWebsite(),
-            'phone' => $org->getPhoneNumber(),
+            'website' => $this->getOrgField($org, 'website'),
+            'phone' => $this->getOrgField($org, 'phone'),
             'created' => $org->created
         ), 201);
     }
@@ -1140,8 +1261,8 @@ class SimpleApiController {
                         $organizations[] = array(
                             'id' => $org->getId(),
                             'name' => $org->getName(),
-                            'website' => $org->getWebsite(),
-                            'phone' => $org->getPhoneNumber(),
+                            'website' => $this->getOrgField($org, 'website'),
+                            'phone' => $this->getOrgField($org, 'phone'),
                             'user_count' => $userCount,
                             'created' => $org->getCreateDate(),
                             'updated' => $org->getUpdateDate()
@@ -1149,7 +1270,7 @@ class SimpleApiController {
                     }
                 } catch (Exception $e) {
                     // Log error but continue with other organizations
-                    error_log('Error processing organization ID ' . $row[0] . ': ' . $e->getMessage());
+                    error_log('getOrganizations: Error processing organization ID ' . $row[0] . ': ' . $e->getMessage());
                     continue;
                 }
             }
@@ -1176,24 +1297,29 @@ class SimpleApiController {
         
         $users = array();
         while ($row = db_fetch_row($result)) {
-            $user = User::lookup($row[0]);
-            if ($user) {
-                $users[] = array(
-                    'id' => $user->getId(),
-                    'name' => $user->getName()->getFull(),
-                    'email' => (string) $user->getEmail(),
-                    'phone' => $user->getPhoneNumber()
-                );
+            try {
+                $user = User::lookup($row[0]);
+                if ($user) {
+                    $users[] = array(
+                        'id' => $user->getId(),
+                        'name' => $user->getName()->getFull(),
+                        'email' => (string) $user->getEmail(),
+                        'phone' => $user->getPhoneNumber()
+                    );
+                }
+            } catch (Exception $e) {
+                error_log("getOrganization: Error processing user ID " . $row[0] . ": " . $e->getMessage());
+                continue;
             }
         }
         
         $this->success(array(
             'id' => $org->getId(),
             'name' => $org->getName(),
-            'website' => $org->getWebsite(),
-            'phone' => $org->getPhoneNumber(),
-            'address' => $org->getAddress(),
-            'notes' => $org->getNotes(),
+            'website' => $this->getOrgField($org, 'website'),
+            'phone' => $this->getOrgField($org, 'phone'),
+            'address' => $this->getOrgField($org, 'address'),
+            'notes' => $this->getOrgField($org, 'notes'),
             'created' => $org->getCreateDate(),
             'updated' => $org->getUpdateDate(),
             'users' => array(
@@ -1903,10 +2029,12 @@ class SimpleApiController {
     
     public function getCannedResponses() {
         try {
-            $sql = 'SELECT canned_response_id FROM '.CANNED_TABLE.' ORDER BY title';
+            error_log("getCannedResponses: Fetching all canned responses");
+            $sql = 'SELECT canned_id FROM '.CANNED_TABLE.' ORDER BY title';
             $result = db_query($sql);
             
             if (!$result) {
+                error_log("getCannedResponses: Database query failed");
                 $this->error(500, 'Database query failed');
             }
             
@@ -1926,7 +2054,7 @@ class SimpleApiController {
                                     );
                                 }
                             } catch (Exception $e) {
-                                error_log('Error looking up department: ' . $e->getMessage());
+                                error_log('getCannedResponses: Error looking up department: ' . $e->getMessage());
                             }
                         }
                         
@@ -1941,7 +2069,7 @@ class SimpleApiController {
                         );
                     }
                 } catch (Exception $e) {
-                    error_log('Error processing canned response ID ' . $row[0] . ': ' . $e->getMessage());
+                    error_log('getCannedResponses: Error processing canned response ID ' . $row[0] . ': ' . $e->getMessage());
                     continue;
                 }
             }
@@ -1964,13 +2092,17 @@ class SimpleApiController {
         
         // Get department info
         $dept = null;
-        if ($canned->getDeptId()) {
-            if ($d = Dept::lookup($canned->getDeptId())) {
-                $dept = array(
-                    'id' => $d->getId(),
-                    'name' => $d->getName()
-                );
+        try {
+            if ($canned->getDeptId()) {
+                if ($d = Dept::lookup($canned->getDeptId())) {
+                    $dept = array(
+                        'id' => $d->getId(),
+                        'name' => $d->getName()
+                    );
+                }
             }
+        } catch (Exception $e) {
+            error_log("getCannedResponse: Error retrieving department: " . $e->getMessage());
         }
         
         $this->success(array(
